@@ -1,0 +1,43 @@
+#!/bin/bash
+# Runs once, as root, on first boot, before tesser-boot. The box's second disk
+# holds everything under /home/ubuntu. A blank one is a fresh box. One with a
+# filesystem is a copy of a sibling's home: only the worktree and the package
+# stores survive (the list is STORE_DIRS in tesser's protocol/src/table.ts),
+# the rest of the sibling's home, dotfiles included, is thrown away before
+# anything reads it, and boxd scrubs the worktree itself. No second disk
+# within two minutes (an attach that failed) leaves home on the root disk.
+set -euo pipefail
+grep -q '^LABEL=tesser-home ' /etc/fstab && exit 0
+root_disk=/dev/$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
+dev=""
+for _ in $(seq 240); do
+  dev=$(lsblk -dpno NAME,TYPE | awk -v root="$root_disk" '$2 == "disk" && $1 != root { print $1; exit }')
+  [ -n "$dev" ] && break
+  sleep 0.5
+done
+[ -n "$dev" ] || exit 0
+m=/mnt/tesser-home
+mkdir -p "$m"
+if [ -z "$(blkid -o value -s TYPE "$dev" || true)" ]; then
+  mkfs.ext4 -q -m 0 -L tesser-home "$dev"
+  mount -o noatime "$dev" "$m"
+else
+  mount -o noatime "$dev" "$m"
+  install -d -o ubuntu -g ubuntu "$m/.tesser-keep"
+  mkdir -p "$m/.tesser-trash"
+  for p in workspace .local/share/pnpm/store .cache/pnpm .cache/node/corepack .npm/_cacache .cache/yarn .yarn/berry/cache .bun/install/cache .cargo/registry/cache go/pkg/mod/cache/download .cache/uv; do
+    if [ -e "$m/$p" ]; then runuser -u ubuntu -- mkdir -p "$m/.tesser-keep/$(dirname "$p")"; mv "$m/$p" "$m/.tesser-keep/$p"; fi
+  done
+  find "$m" -mindepth 1 -maxdepth 1 ! -name .tesser-keep ! -name .tesser-trash ! -name lost+found -exec mv -t "$m/.tesser-trash" {} +
+  find "$m/.tesser-keep" -mindepth 1 -maxdepth 1 -exec mv -t "$m" {} +
+  rmdir "$m/.tesser-keep"
+  install -d -o ubuntu -g ubuntu "$m/.tesser"
+  install -o ubuntu -g ubuntu -m 644 /dev/null "$m/.tesser/forked"
+fi
+cp -an /home/ubuntu/. "$m/"
+chown ubuntu:ubuntu "$m"
+chmod 750 "$m"
+umount "$m"
+echo 'LABEL=tesser-home /home/ubuntu ext4 noatime,nofail 0 2' >> /etc/fstab
+mount /home/ubuntu
+if [ -d /home/ubuntu/.tesser-trash ]; then systemd-run --no-block rm -rf /home/ubuntu/.tesser-trash; fi

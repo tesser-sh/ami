@@ -1,0 +1,13 @@
+[Unit]
+Description=tesser box home volume
+After=local-fs.target
+Before=tesser-boot.service tesser-boxd.service
+ConditionPathExists=!/etc/tesser/boxd.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tesser-home
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

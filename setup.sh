@@ -55,4 +55,6 @@ install -m 644 "$files/config/99-tesser.cfg" /etc/cloud/cloud.cfg.d/99-tesser.cf
 install -m 644 "$files/boot/tesser-boxd.service" /etc/systemd/system/tesser-boxd.service
 install -m 644 "$files/boot/tesser-boot.service" /etc/systemd/system/tesser-boot.service
 install -m 755 "$files/boot/tesser-boot" /usr/local/sbin/tesser-boot
-systemctl enable tesser-boot.service
+install -m 644 "$files/boot/tesser-home.service" /etc/systemd/system/tesser-home.service
+install -m 755 "$files/boot/tesser-home" /usr/local/sbin/tesser-home
+systemctl enable tesser-boot.service tesser-home.service

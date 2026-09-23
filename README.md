@@ -10,13 +10,14 @@ Stock Ubuntu 24.04 LTS from Canonical (`box.pkr.hcl` pins the exact AMI id), plu
   - build tools, git (from the git-core PPA), docker and compose, rsync;
   - node 22 and 24 through fnm, and bun;
   - passwordless sudo for `ubuntu`;
-  - higher inotify limits.
+  - higher inotify limits, and dirty pages written back within ~3s, so a copy of a box's home disk never catches a half-written install.
 
   It also turns off unattended upgrades and needrestart's automatic restarts, so a box never patches or restarts itself in the middle of your work.
 - **[`boot/`](boot):** runs once, on first boot.
   - `tesser-boot` reads the box's config from EC2 user-data. It must be strict JSON with exactly four keys (`orgId`, `boxId`, `cellUrl`, `boxToken`).
   - It downloads boxd, the box agent, from that cell and installs it only if `tesser-verify-boxd` accepts it.
   - `tesser-boxd.service` runs boxd as `ubuntu`.
+  - `tesser-home` mounts the box's second disk as `/home/ubuntu`, formatting it when it is blank. When the disk is a copy of another box's home in the same org, it keeps only the worktree and the package caches and deletes the rest (dotfiles, shell history, ssh keys) before anything reads it.
 - **[`config/`](config):** the sysctl settings, and `allow_userdata: false`, which stops cloud-init from ever running user-data as a script. User-data is data here, never code.
 - **[`verify/verify.mjs`](verify/verify.mjs):** installed as `/usr/local/bin/tesser-verify-boxd`. It checks three things:
   - boxd's statement carries an ed25519 signature by tesser's release key;
