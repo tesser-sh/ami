@@ -40,7 +40,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
-          role-to-assume: ${{ vars.AWS_AMI_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::131798513069:role/tesser-ami-publish
           role-duration-seconds: 7200
           aws-region: us-west-2
 
