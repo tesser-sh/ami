@@ -32,12 +32,12 @@ try {
   refuse("not JSON");
 }
 if (c === null || typeof c !== "object" || Array.isArray(c)) refuse("not a JSON object");
-const keys = ["orgId", "boxId", "cellUrl", "boxToken"];
-if (Object.keys(c).sort().join(",") !== [...keys].sort().join(",")) refuse("keys must be exactly " + keys.join(", "));
+const keys = "boxToken" in c ? ["orgId", "boxId", "cellUrl", "boxToken"] : ["orgId", "boxId", "cellUrl"];
+if (Object.keys(c).sort().join(",") !== [...keys].sort().join(",")) refuse("keys must be exactly orgId, boxId, cellUrl");
 for (const k of keys) if (typeof c[k] !== "string") refuse(k + " is not a string");
 if (!/^[A-Za-z0-9_-]{1,64}$/.test(c.orgId)) refuse("bad orgId");
 if (!/^box_[0-9a-f]{16}$/.test(c.boxId)) refuse("bad boxId");
-if (!new RegExp("^tsr_b_" + c.boxId + "_[0-9a-f]{32}$").test(c.boxToken)) refuse("bad boxToken");
+if ("boxToken" in c && !new RegExp("^tsr_b_" + c.boxId + "_[0-9a-f]{32}$").test(c.boxToken)) refuse("bad boxToken");
 let url;
 try {
   url = new URL(c.cellUrl);

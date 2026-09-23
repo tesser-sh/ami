@@ -105,7 +105,7 @@ async function boot() {
 }
 
 function config(overrides = {}) {
-  return JSON.stringify({ orgId: "org_x", boxId: BOX_ID, cellUrl: `https://localhost:${cell.port}`, boxToken: TOKEN, ...overrides });
+  return JSON.stringify({ orgId: "org_x", boxId: BOX_ID, cellUrl: `https://localhost:${cell.port}`, ...overrides });
 }
 
 test("the unit runs the script once, before boxd has a config, and never for long", () => {
@@ -138,11 +138,18 @@ test("a signed bundle installs, the user-data becomes boxd's config, and boxd st
     orgId: "org_x",
     boxId: BOX_ID,
     cellUrl: `https://localhost:${cell.port}`,
-    boxToken: TOKEN,
     privateIp: "10.0.1.5",
     vpcCidrs: ["10.0.0.0/16", "100.64.0.0/20"],
   });
   assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block tesser-boxd\n");
+});
+
+test("a control plane that still sends a box token gets it passed through", async () => {
+  userData = config({ boxToken: TOKEN });
+  signature = SIGNATURE;
+  const run = await boot();
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(JSON.parse(readFileSync(join(run.root, "etc/tesser/boxd.json"), "utf8")).boxToken, TOKEN);
 });
 
 test("a bundle whose signature does not verify is never installed", async () => {
@@ -165,6 +172,7 @@ test("user-data that is not the expected JSON refuses to boot before anything is
     config({ cellUrl: `http://localhost:${cell.port}` }),
     config({ cellUrl: `https://localhost:${cell.port}/evil` }),
     config({ boxToken: `tsr_b_box_ffffffffffffffff_${"a".repeat(32)}` }),
+    config({ boxToken: 7 }),
     config({ boxId: "box_$(reboot)" }),
   ];
   for (const data of bad) {

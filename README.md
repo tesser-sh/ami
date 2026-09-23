@@ -14,7 +14,7 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
 
   It also turns off unattended upgrades and needrestart's automatic restarts, so a box never patches or restarts itself in the middle of your work.
 - **[`boot/`](boot):** runs once, on first boot.
-  - `tesser-boot` reads the box's config from EC2 user-data. It must be strict JSON with exactly four keys (`orgId`, `boxId`, `cellUrl`, `boxToken`).
+  - `tesser-boot` reads the box's config from EC2 user-data. It must be strict JSON with exactly three keys (`orgId`, `boxId`, `cellUrl`), none of them secret: boxd proves which instance it runs on with a token STS signs for the instance profile. Until the control plane stops sending it, a fourth `boxToken` key is accepted and passed to boxd.
   - It downloads boxd, the box agent, from that cell and installs it only if `tesser-verify-boxd` accepts it.
   - `tesser-boxd.service` runs boxd as `ubuntu`.
 - **[`config/`](config):** the sysctl settings, and `allow_userdata: false`, which stops cloud-init from ever running user-data as a script. User-data is data here, never code.
