@@ -18,6 +18,7 @@ locals {
     Name            = local.ami_name
     "tesser:ami"    = "box"
     "tesser:source" = var.source_sha
+    "tesser:base"   = "{{ .SourceAMI }}"
   }
 }
 
@@ -25,11 +26,10 @@ source "amazon-ebs" "box" {
   region      = "us-west-2"
   ami_regions = ["us-west-2", "us-east-1"]
 
-  # Ubuntu 24.04 LTS (amd64), pinned by id. The owner filter makes Packer
-  # refuse it unless it is Canonical's.
+  # The newest Ubuntu 24.04 LTS (amd64) that Canonical has published.
   source_ami_filter {
     filters = {
-      image-id = "ami-0ac74609c6396bed3"
+      name = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
     }
     owners      = ["099720109477"]
     most_recent = true
@@ -88,5 +88,9 @@ build {
   post-processor "manifest" {
     output     = "manifest.json"
     strip_path = true
+    custom_data = {
+      base      = build.SourceAMI
+      base_name = build.SourceAMIName
+    }
   }
 }
