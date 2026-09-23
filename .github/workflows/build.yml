@@ -1,0 +1,105 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - amis.json
+      - README.md
+      - LICENSE
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Canary, verify the live boxd with this repo's verifier
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d)
+          for f in bundle statement statement.sig; do
+            curl -fsSL "https://api.tesser.sh/v1/boxd/$f" -o "$dir/$f"
+          done
+          install -m 755 verify/verify.mjs "$dir/tesser-verify-boxd"
+          "$dir/tesser-verify-boxd" "$dir/bundle" "$dir/statement" "$dir/statement.sig"
+
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::131798513069:role/tesser-ami-publish
+          role-duration-seconds: 7200
+          aws-region: us-west-2
+
+      - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3.4.0
+        with:
+          version: 1.16.1
+
+      - run: packer init box.pkr.hcl
+
+      - run: packer build -color=false -var "source_sha=${GITHUB_SHA}" box.pkr.hcl
+
+      - name: amis.json
+        run: |
+          set -euo pipefail
+          jq -r '.builds[-1].artifact_id | split(",") | map(split(":") | {(.[0]): .[1]}) | add' manifest.json > amis.json
+          cat amis.json
+
+      - name: Commit amis.json
+        id: commit
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add amis.json
+          git commit -m "amis: built from ${GITHUB_SHA} (run ${GITHUB_RUN_ID})"
+          git pull --rebase origin main
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Built from ${GITHUB_SHA} by ${RUN_URL}"
+            echo
+            echo '| region | ami |'
+            echo '| --- | --- |'
+            jq -r 'to_entries[] | "| \(.key) | `\(.value)` |"' amis.json
+          } > notes.md
+          gh release create "build-${GITHUB_RUN_ID}" --target "${{ steps.commit.outputs.sha }}" --title "build ${GITHUB_RUN_ID}" --notes-file notes.md amis.json
+
+      - name: Rotate, keep the newest 2 public images per region
+        run: |
+          set -euo pipefail
+          for region in $(jq -r 'keys[]' amis.json); do
+            aws ec2 describe-images --region "$region" --owners self \
+              --filters 'Name=name,Values=tesser-box-*' 'Name=tag:tesser:ami,Values=box' > images.json
+            keep=$(jq -c '[.Images[] | select(.Public)] | sort_by(.CreationDate) | reverse | .[:2] | map(.ImageId)' images.json)
+            jq -c --argjson keep "$keep" '.Images[] | select(.ImageId as $id | $keep | index($id) | not)
+              | {id: .ImageId, snapshots: [.BlockDeviceMappings[].Ebs.SnapshotId // empty]}' images.json |
+            while read -r image; do
+              id=$(jq -r .id <<< "$image")
+              echo "deregistering $region $id"
+              aws ec2 deregister-image --region "$region" --image-id "$id"
+              for snapshot in $(jq -r '.snapshots[]' <<< "$image"); do
+                aws ec2 delete-snapshot --region "$region" --snapshot-id "$snapshot"
+              done
+            done
+          done
