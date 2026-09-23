@@ -7,6 +7,8 @@ on:
       - amis.json
       - README.md
       - LICENSE
+  schedule:
+    - cron: "0 9 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -27,6 +29,10 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+
+      - run: for f in setup.sh cleanup.sh boot/tesser-boot; do bash -n "$f"; done
+
+      - run: node --test test/boot.test.mjs
 
       - name: Canary, verify the live boxd with this repo's verifier
         run: |
@@ -78,6 +84,8 @@ jobs:
           set -euo pipefail
           {
             echo "Built from ${GITHUB_SHA} by ${RUN_URL}"
+            echo
+            jq -r '.builds[-1].custom_data | "Base: `\(.base)` (\(.base_name))"' manifest.json
             echo
             echo '| region | ami |'
             echo '| --- | --- |'

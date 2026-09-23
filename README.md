@@ -4,7 +4,7 @@ This repo is the whole recipe for the AMI every [tesser](https://tesser.sh) box 
 
 ## What's in the image
 
-Stock Ubuntu 24.04 LTS from Canonical (`box.pkr.hcl` pins the exact AMI id), plus:
+Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published when the build runs (`box.pkr.hcl` filters on Canonical's account and the noble amd64 name). Each image records the exact base AMI id in its `tesser:base` tag and in its release notes. `build.yml` rebuilds every Monday as well as on every push to `main`, so OS patches arrive within a week. On top of the base:
 
 - **[`setup.sh`](setup.sh):** the dev toolchain a box needs.
   - build tools, git (from the git-core PPA), docker and compose, rsync;
@@ -28,16 +28,18 @@ Stock Ubuntu 24.04 LTS from Canonical (`box.pkr.hcl` pins the exact AMI id), plu
 
 Nothing else. The image holds no secrets and no tesser code beyond the verifier and boot script above. boxd is fetched and verified at boot.
 
+[`test/boot.test.mjs`](test/boot.test.mjs) runs `boot/tesser-boot` under bash against a fake IMDS and a local HTTPS cell, with the real verifier (its key swapped for a test key) and a `systemctl` shim. It checks that a signed boxd installs, that a bad signature or bad user-data installs nothing, and that the shipped verifier trusts only the release key. Plain node, no dependencies: `node --test test/boot.test.mjs`. It runs on every pull request and before every build.
+
 ## How to verify an AMI
 
-- Every AMI is built by [`build.yml`](.github/workflows/build.yml) from a commit of this repo, in a public run. Each run creates a [release](../../releases) named `build-<run id>` that lists its AMI ids and links the run and the commit it built.
+- Every AMI is built by [`build.yml`](.github/workflows/build.yml) from a commit of this repo, in a public run. Each run creates a [release](../../releases) named `build-<run id>` that lists its AMI ids and base AMI and links the run and the commit it built. tesser's own deploy pins the latest release and moves to each new one on its own.
 - [`amis.json`](amis.json) holds the current AMI id per region. Its git history is the history of every published image, and each commit names the commit it was built from.
-- Each image is tagged `tesser:source=<commit sha>` and owned by tesser's AWS account `131798513069`:
+- Each image is tagged `tesser:source=<commit sha>` and `tesser:base=<Canonical AMI id>`, and owned by tesser's AWS account `131798513069`:
 
   ```sh
   aws ec2 describe-images --region us-west-2 --owners 131798513069 \
     --filters 'Name=name,Values=tesser-box-*' \
-    --query 'Images[].[ImageId,Name,CreationDate,Tags[?Key==`tesser:source`]|[0].Value]' --output table
+    --query 'Images[].[ImageId,Name,CreationDate,Tags[?Key==`tesser:source`]|[0].Value,Tags[?Key==`tesser:base`]|[0].Value]' --output table
   ```
 
 Check that the AMI you launch appears in a run's output, and read this repo at that commit.
