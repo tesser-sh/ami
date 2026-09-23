@@ -1,0 +1,63 @@
+#!/bin/bash
+set -euo pipefail
+imds=http://169.254.169.254
+etc=/etc/tesser
+opt=/opt/tesser
+verifier=/usr/local/bin/tesser-verify-boxd
+owner=ubuntu
+group=ubuntu
+tries=10
+pause=3
+retry() { for _ in $(seq "$tries"); do "$@" && return 0; sleep "$pause"; done; return 1; }
+get() { curl -fsS --connect-timeout 5 --max-time 30 "$@"; }
+dl=$(mktemp -d)
+trap 'rm -rf "$dl"' EXIT
+token=$(retry get -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' "$imds/latest/api/token")
+metadata() { retry get -H "X-aws-ec2-metadata-token: $token" "$imds/latest/$1"; }
+metadata user-data > "$dl/user-data"
+private_ip=$(metadata meta-data/local-ipv4)
+mac=$(metadata meta-data/mac)
+vpc_cidrs=$(metadata "meta-data/network/interfaces/macs/$mac/vpc-ipv4-cidr-blocks")
+cell_url=$(node - "$dl/user-data" "$private_ip" "$vpc_cidrs" "$dl/boxd.json" <<'JS'
+const fs = require("node:fs");
+const [src, privateIp, cidrs, out] = process.argv.slice(2);
+const refuse = (why) => {
+  console.error("tesser-boot: refusing user-data: " + why);
+  process.exit(1);
+};
+let c;
+try {
+  c = JSON.parse(fs.readFileSync(src, "utf8"));
+} catch {
+  refuse("not JSON");
+}
+if (c === null || typeof c !== "object" || Array.isArray(c)) refuse("not a JSON object");
+const keys = ["orgId", "boxId", "cellUrl", "boxToken"];
+if (Object.keys(c).sort().join(",") !== [...keys].sort().join(",")) refuse("keys must be exactly " + keys.join(", "));
+for (const k of keys) if (typeof c[k] !== "string") refuse(k + " is not a string");
+if (!/^[A-Za-z0-9_-]{1,64}$/.test(c.orgId)) refuse("bad orgId");
+if (!/^box_[0-9a-f]{16}$/.test(c.boxId)) refuse("bad boxId");
+if (!new RegExp("^tsr_b_" + c.boxId + "_[0-9a-f]{32}$").test(c.boxToken)) refuse("bad boxToken");
+let url;
+try {
+  url = new URL(c.cellUrl);
+} catch {
+  refuse("cellUrl is not a URL");
+}
+if (url.protocol !== "https:" || url.origin !== c.cellUrl) refuse("cellUrl must be a bare https origin");
+fs.writeFileSync(out, JSON.stringify({ ...c, privateIp, vpcCidrs: cidrs.split(/\s+/).filter(Boolean) }), { mode: 0o600 });
+console.log(c.cellUrl);
+JS
+)
+fetch_boxd() {
+  get -L "$cell_url/v1/boxd/bundle" -o "$dl/boxd.js" &&
+    get -L "$cell_url/v1/boxd/statement" -o "$dl/statement" &&
+    get -L "$cell_url/v1/boxd/statement.sig" -o "$dl/statement.sig" &&
+    "$verifier" "$dl/boxd.js" "$dl/statement" "$dl/statement.sig"
+}
+retry fetch_boxd
+install -d -o "$owner" -g "$group" -m 755 "$opt"
+install -o "$owner" -g "$group" -m 644 "$dl/boxd.js" "$opt/boxd.js"
+install -d -m 755 "$etc"
+install -o "$owner" -g "$group" -m 600 "$dl/boxd.json" "$etc/boxd.json"
+systemctl enable --now --no-block tesser-boxd

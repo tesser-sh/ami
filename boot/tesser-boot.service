@@ -1,0 +1,13 @@
+[Unit]
+Description=tesser box bootstrap from user-data
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/etc/tesser/boxd.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tesser-boot
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

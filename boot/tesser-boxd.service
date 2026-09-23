@@ -1,0 +1,21 @@
+[Unit]
+Description=tesser boxd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/local/bin/node /opt/tesser/boxd.js
+Restart=always
+RestartSec=2
+# process, not control-group: a boxd restart must signal only boxd, never
+# cgroup-kill the supervised dev server sharing the unit. The run writes its
+# own log file, so the restarted boxd re-adopts it from instance.json with its
+# output intact (unsupervised: watched by pid, stoppable, exit code lost); a
+# self-update stops it first instead.
+KillMode=process
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
