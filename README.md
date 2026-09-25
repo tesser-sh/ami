@@ -8,16 +8,18 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
 
 - **[`setup.sh`](setup.sh):** the dev toolchain a box needs.
   - build tools, git (from the git-core PPA), docker and compose, rsync;
-  - node 22 and 24 through fnm, and bun;
+  - node 22 and 24 through fnm;
+  - bun through [`shim/bun`](shim/bun), installed as `bun` and `bunx`. It runs the version the repo pins, from the nearest `.bun-version` or `"packageManager": "bun@<version>"` in a `package.json` at or above the working directory, and installs that release from bun's GitHub releases the first time it runs. A repo that pins nothing gets the newest bun as of the build;
   - passwordless sudo for `ubuntu`;
-  - higher inotify limits.
+  - higher inotify limits;
+  - swap in compressed memory (zram, up to 8 GB), so a memory spike slows a box down instead of getting a process OOM-killed.
 
   It also turns off unattended upgrades and needrestart's automatic restarts, so a box never patches or restarts itself in the middle of your work.
 - **[`boot/`](boot):** runs once, on first boot.
   - `tesser-boot` reads the box's config from EC2 user-data. It must be strict JSON with exactly three keys (`orgId`, `boxId`, `cellUrl`), none of them secret: boxd proves which instance it runs on with a token STS signs for the instance profile. Until the control plane stops sending it, a fourth `boxToken` key is accepted and passed to boxd.
   - It downloads boxd, the box agent, from that cell and installs it only if `tesser-verify-boxd` accepts it.
   - `tesser-boxd.service` runs boxd as `ubuntu`.
-- **[`config/`](config):** the sysctl settings, and `allow_userdata: false`, which stops cloud-init from ever running user-data as a script. User-data is data here, never code.
+- **[`config/`](config):** the sysctl settings, the zram swap device, and `allow_userdata: false`, which stops cloud-init from ever running user-data as a script. User-data is data here, never code.
 - **[`verify/verify.mjs`](verify/verify.mjs):** installed as `/usr/local/bin/tesser-verify-boxd`. It checks three things:
   - boxd's statement carries an ed25519 signature by tesser's release key;
   - the statement is for boxd;
@@ -26,9 +28,9 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
   Node built-ins only. On every build, the workflow first runs it against the boxd that api.tesser.sh serves right now, so this verifier and the live signed boxd can't drift apart.
 - **[`cleanup.sh`](cleanup.sh):** removes the build instance's SSH host keys, authorized keys and cloud-init state before imaging.
 
-Nothing else. The image holds no secrets and no tesser code beyond the verifier and boot script above. boxd is fetched and verified at boot.
+Nothing else. The image holds no secrets and no tesser code beyond the verifier, the boot script and the bun shim above. boxd is fetched and verified at boot.
 
-[`test/boot.test.mjs`](test/boot.test.mjs) runs `boot/tesser-boot` under bash against a fake IMDS and a local HTTPS cell, with the real verifier (its key swapped for a test key) and a `systemctl` shim. It checks that a signed boxd installs, that a bad signature or bad user-data installs nothing, and that the shipped verifier trusts only the release key. Plain node, no dependencies: `node --test test/boot.test.mjs`. It runs on every pull request and before every build.
+[`test/boot.test.mjs`](test/boot.test.mjs) runs `boot/tesser-boot` under bash against a fake IMDS and a local HTTPS cell, with the real verifier (its key swapped for a test key) and a `systemctl` shim. It checks that a signed boxd installs, that a bad signature or bad user-data installs nothing, and that the shipped verifier trusts only the release key. [`test/bun.test.mjs`](test/bun.test.mjs) runs `shim/bun` against a local release server and checks which version each pin picks, that a release downloads once, and that a failed download leaves nothing behind. Plain node, no dependencies: `node --test test/*.test.mjs`. Both run on every pull request and before every build.
 
 ## How to verify an AMI
 

@@ -17,7 +17,7 @@ install -d /etc/needrestart/conf.d
 echo '$nrconf{restart} = "l";' > /etc/needrestart/conf.d/tesser.conf
 
 apt-get update
-apt-get install -y ca-certificates curl rsync unzip nftables docker.io docker-compose-v2 build-essential pkg-config libssl-dev software-properties-common
+apt-get install -y ca-certificates curl rsync unzip nftables docker.io docker-compose-v2 build-essential pkg-config libssl-dev software-properties-common systemd-zram-generator
 add-apt-repository -y ppa:git-core/ppa
 apt-get install -y git
 
@@ -36,10 +36,16 @@ chown -R ubuntu:ubuntu /usr/local/fnm
 # The only thing that decides whether a downloaded boxd may run.
 install -m 755 "$files/verify/verify.mjs" /usr/local/bin/tesser-verify-boxd
 
-export BUN_INSTALL=/usr/local/bun
-curl -fsSL https://bun.sh/install | bash
-ln -sf /usr/local/bun/bin/bun /usr/local/bin/bun
-ln -sf /usr/local/bun/bin/bun /usr/local/bin/bunx
+# bun through a shim that runs the version the repo pins, installing it on
+# first use; the newest release for a repo that pins none.
+latest=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/oven-sh/bun/releases/latest)
+latest=${latest##*/bun-v}
+[[ $latest =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+install -d /usr/local/bun
+echo "$latest" > /usr/local/bun/default
+install -m 755 "$files/shim/bun" /usr/local/bin/bun
+ln -sf bun /usr/local/bin/bunx
+(cd / && /usr/local/bin/bun --version)
 chown -R ubuntu:ubuntu /usr/local/bun
 sed -i 's|^PATH="|PATH="/home/ubuntu/.bun/bin:|' /etc/environment
 printf '%s\n' 'export PATH=$HOME/.bun/bin:$PATH' > /etc/profile.d/bun.sh
@@ -50,6 +56,9 @@ echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tesser-ubuntu
 chmod 440 /etc/sudoers.d/tesser-ubuntu
 
 install -m 644 "$files/config/99-tesser.conf" /etc/sysctl.d/99-tesser.conf
+# Swap in compressed memory: a spike on top of a running stack slows down
+# instead of getting OOM-killed.
+install -m 644 "$files/config/zram-generator.conf" /etc/systemd/zram-generator.conf
 # User-data is config for tesser-boot, never a script cloud-init runs.
 install -m 644 "$files/config/99-tesser.cfg" /etc/cloud/cloud.cfg.d/99-tesser.cfg
 install -m 644 "$files/boot/tesser-boxd.service" /etc/systemd/system/tesser-boxd.service

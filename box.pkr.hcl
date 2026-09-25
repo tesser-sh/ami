@@ -75,7 +75,7 @@ build {
   }
 
   provisioner "file" {
-    sources     = ["boot", "config", "verify"]
+    sources     = ["boot", "config", "shim", "verify"]
     destination = "/tmp/tesser/"
   }
 

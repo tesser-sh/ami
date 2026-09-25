@@ -17,9 +17,9 @@ jobs:
         with:
           node-version: 24
 
-      - run: for f in setup.sh cleanup.sh boot/tesser-boot; do bash -n "$f"; done
+      - run: for f in setup.sh cleanup.sh boot/tesser-boot shim/bun; do bash -n "$f"; done
 
-      - run: node --test test/boot.test.mjs
+      - run: node --test test/*.test.mjs
 
       - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3.4.0
         with:
