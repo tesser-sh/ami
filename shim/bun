@@ -1,0 +1,62 @@
+#!/bin/bash
+# bun at the version the repo pins: the nearest .bun-version, or
+# "packageManager": "bun@<version>" in a package.json, walking up from the
+# working directory. A pinned version installs on first use; with no pin, the
+# image's own bun runs.
+set -euo pipefail
+root=/usr/local/bun
+releases=https://github.com/oven-sh/bun/releases/download
+
+pin=""
+want=""
+manager='"packageManager"[[:space:]]*:[[:space:]]*"bun@([^"+]*)'
+dir=$PWD
+while :; do
+  if [ -f "$dir/.bun-version" ]; then
+    pin=$dir/.bun-version
+    want=$(<"$pin")
+    break
+  fi
+  if [ -f "$dir/package.json" ] && [[ $(<"$dir/package.json") =~ $manager ]]; then
+    pin=$dir/package.json
+    want=${BASH_REMATCH[1]}
+    break
+  fi
+  [ -n "$dir" ] || break
+  dir=${dir%/*}
+done
+
+want=${want//[[:space:]]/}
+want=${want#bun-}
+want=${want#v}
+version=$(<"$root/default")
+if [[ $want =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  version=$want
+elif [ -n "$pin" ]; then
+  echo "bun: $pin pins \"$want\", not an exact version; running $version" >&2
+fi
+
+name=bun
+if [ "${0##*/}" = bunx ]; then name=bunx; fi
+bin=$root/versions/$version/bin/$name
+if [ ! -x "$bin" ]; then
+  case $(uname -m) in
+    x86_64) arch=x64 ;;
+    aarch64 | arm64) arch=aarch64 ;;
+    *) echo "bun: no release for $(uname -m)" >&2; exit 1 ;;
+  esac
+  echo "bun: installing $version${pin:+, pinned by $pin}" >&2
+  mkdir -p "$root/versions"
+  tmp=$(mktemp -d "$root/versions/.$version.XXXXXX")
+  chmod 755 "$tmp"
+  if ! curl -fsSL --retry 3 -o "$tmp/bun.zip" "$releases/bun-v$version/bun-linux-$arch.zip" ||
+    ! unzip -qj "$tmp/bun.zip" "bun-linux-$arch/bun" -d "$tmp/bin"; then
+    rm -rf "$tmp"
+    echo "bun: could not install $version" >&2
+    exit 1
+  fi
+  rm "$tmp/bun.zip"
+  ln -s bun "$tmp/bin/bunx"
+  ln -s "${tmp##*/}" "$root/versions/$version" 2>/dev/null || rm -rf "$tmp"
+fi
+exec "$bin" "$@"
