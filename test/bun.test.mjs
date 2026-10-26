@@ -14,6 +14,7 @@ const DEFAULT = "9.9.9";
 
 let dir;
 let root;
+let home;
 let bin;
 let server;
 let downloads = 0;
@@ -48,6 +49,7 @@ before(async () => {
   write(join(root, "default"), `${DEFAULT}\n`);
   write(join(root, "versions", DEFAULT, "bin", "bun"), fakeBun(DEFAULT));
   chmodSync(join(root, "versions", DEFAULT, "bin", "bun"), 0o755);
+  home = join(dir, "home");
   bin = join(dir, "bin");
   write(
     join(bin, "bun"),
@@ -66,7 +68,7 @@ function project(files) {
 }
 
 function run(cwd, name = "bun") {
-  const child = spawn(join(bin, name), ["x"], { cwd });
+  const child = spawn(join(bin, name), ["x"], { cwd, env: { ...process.env, HOME: home } });
   const out = { stdout: "", stderr: "" };
   child.stdout.on("data", (chunk) => (out.stdout += chunk));
   child.stderr.on("data", (chunk) => (out.stderr += chunk));
@@ -92,8 +94,20 @@ test("a .bun-version pins it from any depth below, installed on first use only",
   assert.equal(again.stdout, "1.2.3 bun x\n");
   assert.equal(again.stderr, "");
   assert.equal(downloads, before + 1);
-  assert.equal(statSync(join(root, "versions", "1.2.3")).mode & 0o777, 0o755);
-  assert.equal((await run(base, "bunx")).stdout, "1.2.3 bunx x\n");
+  assert.equal(statSync(join(home, ".bun", "versions", "1.2.3", "bin")).mode & 0o777, 0o755);
+  assert.equal((await run(base, "bunx")).stdout, "1.2.3 bun x x\n");
+  assert.deepEqual(readdirSync(join(home, ".bun")), ["versions"]);
+});
+
+test("a pinned release a sibling's warm-up left in ~/.bun/versions runs without a download", async () => {
+  write(join(home, ".bun", "versions", "7.7.7", "bin", "bun"), fakeBun("7.7.7"));
+  chmodSync(join(home, ".bun", "versions", "7.7.7", "bin", "bun"), 0o755);
+  const before = downloads;
+  const r = await run(project({ ".bun-version": "7.7.7" }));
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "7.7.7 bun x\n");
+  assert.equal(r.stderr, "");
+  assert.equal(downloads, before);
 });
 
 test("packageManager in package.json pins it, and the nearest pin wins", async () => {
@@ -118,7 +132,7 @@ test("a release that cannot be fetched fails and leaves nothing behind", async (
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /bun: could not install 4\.0\.4/);
   assert.deepEqual(
-    readdirSync(join(root, "versions")).filter((name) => name.includes("4.0.4")),
+    readdirSync(join(home, ".bun"), { recursive: true }).filter((name) => name.includes("4.0.4")),
     [],
   );
 });

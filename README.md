@@ -9,7 +9,7 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
 - **[`setup.sh`](setup.sh):** the dev toolchain a box needs.
   - build tools, git (from the git-core PPA), docker and compose, rsync;
   - node 22 and 24 through fnm;
-  - bun through [`shim/bun`](shim/bun), installed as `bun` and `bunx`. It runs the version the repo pins, from the nearest `.bun-version` or `"packageManager": "bun@<version>"` in a `package.json` at or above the working directory, and installs that release from bun's GitHub releases the first time it runs. A repo that pins nothing gets the newest bun as of the build;
+  - bun through [`shim/bun`](shim/bun), installed as `bun` and `bunx`. It runs the version the repo pins, from the nearest `.bun-version` or `"packageManager": "bun@<version>"` in a `package.json` at or above the working directory, and installs that release from bun's GitHub releases under `~/.bun/versions` the first time it runs, where boxd's warm-up from a sibling box can bring it along. A repo that pins nothing gets the newest bun as of the build;
   - passwordless sudo for `ubuntu`;
   - higher inotify limits;
   - swap in compressed memory (zram, up to 8 GB), so a memory spike slows a box down instead of getting a process OOM-killed.
@@ -30,7 +30,7 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
 
 Nothing else. The image holds no secrets and no tesser code beyond the verifier, the boot script and the bun shim above. boxd is fetched and verified at boot.
 
-[`test/boot.test.mjs`](test/boot.test.mjs) runs `boot/tesser-boot` under bash against a fake IMDS and a local HTTPS cell, with the real verifier (its key swapped for a test key) and a `systemctl` shim. It checks that a signed boxd installs, that a bad signature or bad user-data installs nothing, and that the shipped verifier trusts only the release key. [`test/bun.test.mjs`](test/bun.test.mjs) runs `shim/bun` against a local release server and checks which version each pin picks, that a release downloads once, and that a failed download leaves nothing behind. Plain node, no dependencies: `node --test test/*.test.mjs`. Both run on every pull request and before every build.
+[`test/boot.test.mjs`](test/boot.test.mjs) runs `boot/tesser-boot` under bash against a fake IMDS and a local HTTPS cell, with the real verifier (its key swapped for a test key) and a `systemctl` shim. It checks that a signed boxd installs, that a bad signature or bad user-data installs nothing, and that the shipped verifier trusts only the release key. [`test/bun.test.mjs`](test/bun.test.mjs) runs `shim/bun` against a local release server and checks which version each pin picks, that a release downloads once, that one already under `~/.bun/versions` never downloads, and that a failed download leaves nothing behind. Plain node, no dependencies: `node --test test/*.test.mjs`. Both run on every pull request and before every build.
 
 ## How to verify an AMI
 
