@@ -39,8 +39,8 @@ elif [ -n "$pin" ]; then
 fi
 
 if [ "${0##*/}" = bunx ]; then set -- x "$@"; fi
-home=$HOME/.bun
-if [ "$version" = "$default" ]; then home=$root; fi
+home=$root
+if [ "$version" != "$default" ]; then home=${HOME:?}/.bun; fi
 bin=$home/versions/$version/bin/bun
 if [ ! -x "$bin" ]; then
   case $(uname -m) in
