@@ -11,6 +11,7 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
   - node 22 and 24 through fnm;
   - bun through [`shim/bun`](shim/bun), installed as `bun` and `bunx`. It runs the version the repo pins, from the nearest `.bun-version` or `"packageManager": "bun@<version>"` in a `package.json` at or above the working directory, and installs that release from bun's GitHub releases under `~/.bun/versions` the first time it runs, where boxd's warm-up from a sibling box can bring it along. A repo that pins nothing gets the newest bun as of the build;
   - passwordless sudo for `ubuntu`;
+  - no login banner: sshd's `pam_motd` is off, so a new ssh session doesn't wait on update-motd's scripts;
   - higher inotify limits;
   - swap in compressed memory (zram, up to 8 GB), so a memory spike slows a box down instead of getting a process OOM-killed.
 

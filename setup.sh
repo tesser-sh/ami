@@ -54,6 +54,8 @@ usermod -aG docker ubuntu
 systemctl enable docker
 echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tesser-ubuntu
 chmod 440 /etc/sudoers.d/tesser-ubuntu
+# No login banner: pam_motd runs update-motd's scripts on every new ssh session.
+sed -i '/^session\s\+optional\s\+pam_motd\.so/s/^/#/' /etc/pam.d/sshd
 
 install -m 644 "$files/config/99-tesser.conf" /etc/sysctl.d/99-tesser.conf
 # Swap in compressed memory: a spike on top of a running stack slows down
