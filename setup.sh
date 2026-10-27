@@ -17,7 +17,7 @@ install -d /etc/needrestart/conf.d
 echo '$nrconf{restart} = "l";' > /etc/needrestart/conf.d/tesser.conf
 
 apt-get update
-apt-get install -y ca-certificates curl rsync unzip nftables docker.io docker-compose-v2 build-essential pkg-config libssl-dev software-properties-common systemd-zram-generator
+apt-get install -y ca-certificates curl rsync unzip nftables nbd-client docker.io docker-compose-v2 build-essential pkg-config libssl-dev software-properties-common systemd-zram-generator
 add-apt-repository -y ppa:git-core/ppa
 apt-get install -y git
 
@@ -54,6 +54,8 @@ usermod -aG docker ubuntu
 systemctl enable docker
 echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tesser-ubuntu
 chmod 440 /etc/sudoers.d/tesser-ubuntu
+# No login banner: pam_motd runs update-motd's scripts on every new ssh session.
+sed -i '/^session\s\+optional\s\+pam_motd\.so/s/^/#/' /etc/pam.d/sshd
 
 install -m 644 "$files/config/99-tesser.conf" /etc/sysctl.d/99-tesser.conf
 # Swap in compressed memory: a spike on top of a running stack slows down
