@@ -7,7 +7,7 @@ This repo is the whole recipe for the AMI every [tesser](https://tesser.sh) box 
 Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published when the build runs (`box.pkr.hcl` filters on Canonical's account and the noble amd64 name). Each image records the exact base AMI id in its `tesser:base` tag and in its release notes. `build.yml` rebuilds every Monday as well as on every push to `main`, so OS patches arrive within a week. On top of the base:
 
 - **[`setup.sh`](setup.sh):** the dev toolchain a box needs.
-  - build tools, git (from the git-core PPA), docker and compose, rsync;
+  - build tools, git (from the git-core PPA), docker and compose, rsync, nbd-client (boxd streams repo snapshots onto a box through it);
   - node 22 and 24 through fnm;
   - bun through [`shim/bun`](shim/bun), installed as `bun` and `bunx`. It runs the version the repo pins, from the nearest `.bun-version` or `"packageManager": "bun@<version>"` in a `package.json` at or above the working directory, and installs that release from bun's GitHub releases under `~/.bun/versions` the first time it runs, where boxd's warm-up from a sibling box can bring it along. A repo that pins nothing gets the newest bun as of the build;
   - passwordless sudo for `ubuntu`;
