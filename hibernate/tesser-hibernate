@@ -11,6 +11,7 @@ swap=/swap-hibinit
 run=/run/tesser-hibernate
 cache=/var/lib/tesser/pagecache
 pagecache=/usr/local/lib/tesser/pagecache
+home=/var/lib/tesser/home
 sysctls=/etc/sysctl.d/99-tesser.conf
 debounce=20
 
@@ -27,9 +28,16 @@ fi
 say "hibernating on $*"
 
 # Only about half of RAM fits in the image; the kernel drops page cache to
-# make room. Remember what was cached and read it back after the resume.
+# make room. Remember what was cached and read it back after the resume. A box
+# started from a repo snapshot keeps /home/ubuntu on its own volume.
 mkdir -p "$(dirname "$cache")"
-if timeout 60 python3 "$pagecache" snapshot / "$swap" > "$cache.new"; then
+roots=(/)
+mountpoint -q "$home" && roots+=("$home")
+listed=1
+for root in "${roots[@]}"; do
+  timeout 60 python3 "$pagecache" snapshot "$root" "$swap" || listed=0
+done > "$cache.new"
+if ((listed)); then
   mv "$cache.new" "$cache"
 else
   rm -f "$cache.new" "$cache"

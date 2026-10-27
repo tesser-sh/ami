@@ -14,7 +14,7 @@ const SBTN = ["button/sleep", "SBTN", "00000080", "00000000"];
 const LNXSLPBN = ["button/sleep", "LNXSLPBN:00", "00000080", "00000001"];
 const MEM_KB = 8_000_000;
 
-function box({ state = "file", swapOn = false } = {}) {
+function box({ state = "file", swapOn = false, home = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "hibernate-"));
   const bin = join(root, "bin");
   const power = join(root, "power");
@@ -31,6 +31,8 @@ function box({ state = "file", swapOn = false } = {}) {
     writeFileSync(join(bin, name), `#!/bin/sh\necho "${name} $*" >> ${calls}\n`);
     chmodSync(join(bin, name), 0o755);
   }
+  writeFileSync(join(bin, "mountpoint"), `#!/bin/sh\necho "mountpoint $*" >> ${calls}\nexit ${home ? 0 : 1}\n`);
+  chmodSync(join(bin, "mountpoint"), 0o755);
   writeFileSync(join(bin, "python3"), `#!/bin/sh\necho "python3 $*" >> ${calls}\n[ "$2" = snapshot ] && printf '/home/ubuntu/a\\0/usr/b\\0'\nexit 0\n`);
   chmodSync(join(bin, "python3"), 0o755);
   const script = HANDLER.replace(/^power=.*$/m, `power=${power}`)
@@ -39,6 +41,7 @@ function box({ state = "file", swapOn = false } = {}) {
     .replace(/^run=.*$/m, `run=${root}/tesser-hibernate`)
     .replace(/^cache=.*$/m, `cache=${root}/lib/pagecache`)
     .replace(/^pagecache=.*$/m, `pagecache=${root}/pagecache`)
+    .replace(/^home=.*$/m, `home=${root}/home`)
     .replace(/^sysctls=.*$/m, `sysctls=${root}/99-tesser.conf`);
   writeFileSync(join(root, "tesser-hibernate"), script);
   const press = (event) =>
@@ -74,6 +77,15 @@ for (const event of [SBTN, LNXSLPBN]) {
     assert.doesNotMatch(log, /poweroff/);
   });
 }
+
+test("a box on a snapshot home volume lists that volume's cache too", async () => {
+  const b = box({ home: true });
+  assert.equal(await b.press(SBTN), 0);
+  assert.ok(hibernated(b));
+  const snapshots = b.log().match(/^python3 .* snapshot .*$/gm);
+  assert.deepEqual(snapshots, [`python3 ${b.root}/pagecache snapshot / /swap-hibinit`, `python3 ${b.root}/pagecache snapshot ${b.root}/home /swap-hibinit`]);
+  assert.equal(readFileSync(join(b.root, "lib/pagecache"), "utf8"), "/home/ubuntu/a\0/usr/b\0".repeat(2));
+});
 
 test("a swap file that is already on keeps its place", async () => {
   const b = box({ swapOn: true });
