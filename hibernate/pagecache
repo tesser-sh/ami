@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+# snapshot ROOT [SKIP...]: print every regular file under ROOT (one filesystem)
+# with pages in the page cache, NUL-separated.
+# reload LIST: read those files back in parallel.
+import ctypes
+import os
+import stat
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+CACHESTAT = 451
+
+
+class Range(ctypes.Structure):
+    _fields_ = [("off", ctypes.c_uint64), ("len", ctypes.c_uint64)]
+
+
+class Cachestat(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_uint64) for n in ("cache", "dirty", "writeback", "evicted", "recently_evicted")]
+
+
+def files(root, skip):
+    dev = os.lstat(root).st_dev
+    stack = [root]
+    while stack:
+        try:
+            entries = os.scandir(stack.pop())
+        except OSError:
+            continue
+        with entries:
+            for e in entries:
+                try:
+                    s = e.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if s.st_dev != dev:
+                    continue
+                if stat.S_ISDIR(s.st_mode):
+                    stack.append(e.path)
+                elif stat.S_ISREG(s.st_mode) and s.st_size > 0 and e.path not in skip:
+                    yield e.path
+
+
+def snapshot(root, skip):
+    syscall = ctypes.CDLL(None, use_errno=True).syscall
+    rng, st = Range(0, 0), Cachestat()
+    out = sys.stdout.buffer
+    pages = 0
+    for path in files(root, skip):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NOATIME)
+        except OSError:
+            continue
+        try:
+            if syscall(CACHESTAT, fd, ctypes.byref(rng), ctypes.byref(st), 0) == 0 and st.cache > 0:
+                pages += st.cache
+                out.write(os.fsencode(path) + b"\0")
+        finally:
+            os.close(fd)
+    print(f"pagecache: {pages * os.sysconf('SC_PAGE_SIZE') >> 20} MiB cached", file=sys.stderr)
+
+
+def read(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOATIME)
+    except OSError:
+        return 0
+    n = 0
+    try:
+        while chunk := os.read(fd, 1 << 20):
+            n += len(chunk)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+    return n
+
+
+def reload(listing):
+    with open(listing, "rb") as f:
+        paths = [p for p in f.read().split(b"\0") if p]
+    start = time.monotonic()
+    with ThreadPoolExecutor(32) as pool:
+        n = sum(pool.map(read, paths))
+    print(f"pagecache: read {len(paths)} files, {n >> 20} MiB in {time.monotonic() - start:.1f}s", file=sys.stderr)
+
+
+if sys.argv[1:2] == ["snapshot"] and len(sys.argv) >= 3:
+    snapshot(sys.argv[2], set(sys.argv[3:]))
+elif sys.argv[1:2] == ["reload"] and len(sys.argv) == 3:
+    reload(sys.argv[2])
+else:
+    sys.exit("usage: pagecache snapshot ROOT [SKIP...] | reload LIST")
