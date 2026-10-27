@@ -20,6 +20,11 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
   - `tesser-boot` reads the box's config from EC2 user-data. It must be strict JSON with exactly three keys (`orgId`, `boxId`, `cellUrl`), none of them secret: boxd proves which instance it runs on with a token STS signs for the instance profile. Until the control plane stops sending it, a fourth `boxToken` key is accepted and passed to boxd.
   - It downloads boxd, the box agent, from that cell and installs it only if `tesser-verify-boxd` accepts it.
   - `tesser-boxd.service` runs boxd as `ubuntu`.
+- **[`hibernate/`](hibernate):** what happens when tesser hibernates a box instead of stopping it.
+  - `tesser-hibernate` replaces Ubuntu's handler for EC2's sleep button. It acts on the `LNXSLPBN` event as well as `SBTN` (Ubuntu's only knew `SBTN`, and a missed event leaves the instance stopping for 20 minutes before EC2 cold boots it), runs once per hibernation, and ignores the duplicate event EC2 sends right after a resume.
+  - Before hibernating it keeps anonymous memory in the image (`vm.swappiness=1`, image size just under half of RAM, the most the kernel can hold) and remembers which files were in the page cache; after the resume [`pagecache`](hibernate/pagecache) reads them back in parallel.
+  - The image goes to the swap file EC2's agent creates, at priority 0 so everyday swapping stays in zram. Ubuntu's resume hook, a `swapoff` that pages the whole image back in from EBS 4 KB at a time, is diverted away.
+  - If the kernel can't hibernate, the box powers off, so the instance stops instead of waiting out EC2.
 - **[`config/`](config):** the sysctl settings, the zram swap device, and `allow_userdata: false`, which stops cloud-init from ever running user-data as a script. User-data is data here, never code.
 - **[`verify/verify.mjs`](verify/verify.mjs):** installed as `/usr/local/bin/tesser-verify-boxd`. It checks three things:
   - boxd's statement carries an ed25519 signature by tesser's release key;
@@ -31,7 +36,7 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
 
 Nothing else. The image holds no secrets and no tesser code beyond the verifier, the boot script and the bun shim above. boxd is fetched and verified at boot.
 
-[`test/boot.test.mjs`](test/boot.test.mjs) runs `boot/tesser-boot` under bash against a fake IMDS and a local HTTPS cell, with the real verifier (its key swapped for a test key) and a `systemctl` shim. It checks that a signed boxd installs, that a bad signature or bad user-data installs nothing, and that the shipped verifier trusts only the release key. [`test/bun.test.mjs`](test/bun.test.mjs) runs `shim/bun` against a local release server and checks which version each pin picks, that a release downloads once, that one already under `~/.bun/versions` never downloads, and that a failed download leaves nothing behind. Plain node, no dependencies: `node --test test/*.test.mjs`. Both run on every pull request and before every build.
+[`test/boot.test.mjs`](test/boot.test.mjs) runs `boot/tesser-boot` under bash against a fake IMDS and a local HTTPS cell, with the real verifier (its key swapped for a test key) and a `systemctl` shim. It checks that a signed boxd installs, that a bad signature or bad user-data installs nothing, and that the shipped verifier trusts only the release key. [`test/hibernate.test.mjs`](test/hibernate.test.mjs) runs `tesser-hibernate` with shims for the kernel's files and the tools it calls: both sleep button events hibernate, a second press while hibernating and the one right after the resume do nothing, a failed hibernation powers off, and `pagecache` lists cached files and reads them back. [`test/bun.test.mjs`](test/bun.test.mjs) runs `shim/bun` against a local release server and checks which version each pin picks, that a release downloads once, that one already under `~/.bun/versions` never downloads, and that a failed download leaves nothing behind. Plain node, no dependencies: `node --test test/*.test.mjs`. Both run on every pull request and before every build.
 
 ## How to verify an AMI
 

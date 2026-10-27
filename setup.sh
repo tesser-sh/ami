@@ -67,3 +67,13 @@ install -m 644 "$files/boot/tesser-boxd.service" /etc/systemd/system/tesser-boxd
 install -m 644 "$files/boot/tesser-boot.service" /etc/systemd/system/tesser-boot.service
 install -m 755 "$files/boot/tesser-boot" /usr/local/sbin/tesser-boot
 systemctl enable tesser-boot.service
+
+# Hibernation: tesser's handler replaces Ubuntu's for EC2's sleep button, and
+# Ubuntu's resume hook (a swapoff that pages the whole image back in from EBS
+# 4 KB at a time) never runs.
+install -m 755 "$files/hibernate/tesser-hibernate" /usr/local/sbin/tesser-hibernate
+install -D -m 755 "$files/hibernate/pagecache" /usr/local/lib/tesser/pagecache
+install -m 644 "$files/hibernate/tesser-sleep" /etc/acpi/events/tesser-sleep
+dpkg-divert --rename --divert /etc/acpi/hibinit-sleep.disabled --add /etc/acpi/events/hibinit-sleep
+dpkg-divert --rename --divert /usr/lib/ec2-hibinit-agent/system-sleep.disabled --add /lib/systemd/system-sleep/hibinit-agent
+install -D -m 644 "$files/config/logind.conf" /etc/systemd/logind.conf.d/tesser.conf
