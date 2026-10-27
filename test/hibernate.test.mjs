@@ -109,6 +109,17 @@ test("a second press while hibernating, and the one acpid delivers right after t
   assert.match(b.log(), /^logger -t tesser-hibernate ignoring button\/sleep LNXSLPBN:00 .* right after a resume$/m);
 });
 
+test("a sleep request right after a resume hibernates once the queued duplicate is spent", async () => {
+  const b = box();
+  assert.equal(await b.press(SBTN), 0);
+  writeFileSync(join(b.power, "state"), "");
+  assert.equal(await b.press(LNXSLPBN), 0);
+  assert.equal(readFileSync(join(b.power, "state"), "utf8"), "");
+  assert.equal(await b.press(SBTN), 0);
+  assert.ok(hibernated(b));
+  assert.equal(b.log().match(/^logger -t tesser-hibernate hibernating on /gm).length, 2);
+});
+
 test("a box that can't hibernate powers off instead of waiting out EC2", async () => {
   const b = box({ state: "broken" });
   await b.press(SBTN);
