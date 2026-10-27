@@ -53,13 +53,15 @@ awk '/^MemTotal:/ { print int($2 * 1024 * 0.45) }' "$meminfo" > "$power/image_si
 # The image goes to the swap file. Priority 0 keeps it below zram once the box
 # is back, so everyday swapping stays in memory.
 grep -q "^$swap " "$swaps" || swapon --priority=0 "$swap"
+ssm=(snap.amazon-ssm-agent.amazon-ssm-agent.service amazon-ssm-agent.service)
+systemctl stop "${ssm[@]}" 2>/dev/null
 sync
 
 if echo disk > "$power/state"; then
   touch "$run.resumed"
   sysctl -q -p "$sysctls"
   say "resumed"
-  systemctl try-restart --no-block snap.amazon-ssm-agent.amazon-ssm-agent.service amazon-ssm-agent.service
+  systemctl start --no-block "${ssm[@]}" 2>/dev/null
   [[ -s $cache ]] && systemd-run --no-block --collect --unit=tesser-pagecache python3 "$pagecache" reload "$cache"
   exit 0
 fi
