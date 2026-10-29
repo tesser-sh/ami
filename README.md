@@ -7,7 +7,8 @@ This repo is the whole recipe for the AMI every [tesser](https://tesser.sh) box 
 Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published when the build runs (`box.pkr.hcl` filters on Canonical's account and the noble amd64 name). Each image records the exact base AMI id in its `tesser:base` tag and in its release notes. `build.yml` rebuilds every Monday as well as on every push to `main`, so OS patches arrive within a week. On top of the base:
 
 - **[`setup.sh`](setup.sh):** the dev toolchain a box needs.
-  - build tools, git (from the git-core PPA), docker and compose, rsync, nbd-client (boxd streams repo snapshots onto a box through it);
+  - the Ubuntu 24.04 LTS kernel for AWS (6.8), in place of the newest HWE kernel Canonical's image boots. MongoDB 8 refuses to start on kernels 6.19 through 7.0.13 ([SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912)), and the LTS kernel never moves past 6.8 while it keeps getting security fixes. `kernel=` in `setup.sh` is the one place to change it;
+  - build tools, git (from the git-core PPA), docker with compose and buildx, rsync, nbd-client (boxd streams repo snapshots onto a box through it);
   - node 22 and 24 through fnm;
   - bun through [`shim/bun`](shim/bun), installed as `bun` and `bunx`. It runs the version the repo pins, from the nearest `.bun-version` or `"packageManager": "bun@<version>"` in a `package.json` at or above the working directory, and installs that release from bun's GitHub releases under `~/.bun/versions` the first time it runs, where boxd's warm-up from a sibling box can bring it along. A repo that pins nothing gets the newest bun as of the build;
   - passwordless sudo for `ubuntu`;
@@ -32,6 +33,7 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
   - the downloaded bundle's sha256 matches the statement.
 
   Node built-ins only. On every build, the workflow first runs it against the boxd that api.tesser.sh serves right now, so this verifier and the live signed boxd can't drift apart.
+- **[`smoke.sh`](smoke.sh):** runs after the build instance reboots into the image's kernel. It fails the build unless that kernel is the only one installed, `docker buildx version` works, and mongo 8, postgres 17 and redis 7 each start and answer their own client's ping within a minute. The images it pulls are deleted before imaging.
 - **[`cleanup.sh`](cleanup.sh):** removes the build instance's SSH host keys, authorized keys and cloud-init state before imaging.
 
 Nothing else. The image holds no secrets and no tesser code beyond the verifier, the boot script and the bun shim above. boxd is fetched and verified at boot.

@@ -17,7 +17,7 @@ jobs:
         with:
           node-version: 24
 
-      - run: for f in setup.sh cleanup.sh boot/tesser-boot shim/bun hibernate/tesser-hibernate; do bash -n "$f"; done
+      - run: for f in setup.sh smoke.sh cleanup.sh boot/tesser-boot shim/bun hibernate/tesser-hibernate; do bash -n "$f"; done
 
       - run: node --test test/*.test.mjs
 
