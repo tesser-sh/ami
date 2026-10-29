@@ -21,6 +21,20 @@ apt-get install -y ca-certificates curl rsync unzip nftables nbd-client docker.i
 add-apt-repository -y ppa:git-core/ppa
 apt-get install -y git
 
+# The kernel track every box boots, and the one place to change it. Canonical's
+# noble image rolls to the newest HWE kernel (7.0 now), and MongoDB 8 refuses
+# to start on 6.19 through 7.0.13 (SERVER-121912). noble has no 6.18 for aws
+# and 6.17 no longer gets fixes, so boxes run the 24.04 LTS kernel, which
+# stays on 6.8 and is patched until 2029. Every other kernel goes, so grub
+# boots this one; smoke.sh fails the build if a box would boot anything else.
+kernel=linux-aws-lts-24.04
+apt-get install -y "$kernel"
+abi=$(dpkg-query -W -f='${Depends}' "linux-image-${kernel#linux-}" | grep -oP 'linux-image-\K[0-9][^ ,]*')
+old=$(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' 'linux-*' | sed -n 's/^ii *//p' |
+  grep -E '^linux-(image-|headers-|tools-|modules-)?aws$|[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | grep -vF "${abi%-aws}" || true)
+[[ -z $old ]] || apt-get purge -y $old
+apt-get autoremove --purge -y
+
 # node 22 and 24 through fnm, 24 the default, on every PATH.
 export FNM_DIR=/usr/local/fnm
 curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /usr/local/fnm --skip-shell

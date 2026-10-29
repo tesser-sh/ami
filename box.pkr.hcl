@@ -80,9 +80,21 @@ build {
   }
 
   provisioner "shell" {
-    scripts          = ["setup.sh", "cleanup.sh"]
+    script           = "setup.sh"
     environment_vars = ["TESSER_FILES=/tmp/tesser"]
     execute_command  = "chmod +x {{ .Path }}; sudo {{ .Vars }} {{ .Path }}"
+  }
+
+  # Boot the image's own kernel, so smoke.sh checks what a box will run.
+  provisioner "shell" {
+    inline            = ["sudo systemctl reboot"]
+    expect_disconnect = true
+  }
+
+  provisioner "shell" {
+    pause_before    = "20s"
+    scripts         = ["smoke.sh", "cleanup.sh"]
+    execute_command = "chmod +x {{ .Path }}; sudo {{ .Vars }} {{ .Path }}"
   }
 
   post-processor "manifest" {
