@@ -17,7 +17,7 @@ install -d /etc/needrestart/conf.d
 echo '$nrconf{restart} = "l";' > /etc/needrestart/conf.d/tesser.conf
 
 apt-get update
-apt-get install -y ca-certificates curl rsync unzip nftables nbd-client docker.io docker-compose-v2 build-essential pkg-config libssl-dev software-properties-common systemd-zram-generator
+apt-get install -y ca-certificates curl rsync unzip nftables nbd-client docker.io docker-compose-v2 docker-buildx build-essential pkg-config libssl-dev software-properties-common systemd-zram-generator
 add-apt-repository -y ppa:git-core/ppa
 apt-get install -y git
 

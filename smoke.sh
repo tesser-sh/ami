@@ -9,6 +9,7 @@ kernels=(/boot/vmlinuz-*)
 echo "kernel $(uname -r)"
 
 systemctl start docker
+docker buildx version
 
 # name, image, readiness command run inside the container
 checks=(
