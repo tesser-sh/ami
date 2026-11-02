@@ -10,6 +10,8 @@ echo "kernel $(uname -r)"
 
 systemctl start docker
 docker buildx version
+uv --version
+mise --version
 
 # name, image, readiness command run inside the container
 checks=(
