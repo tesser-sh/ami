@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=ubuntu
-ExecStart=/usr/local/bin/node /opt/tesser/boxd.js
+ExecStart=/usr/local/fnm/aliases/default/bin/node /opt/tesser/boxd.js
 Restart=always
 RestartSec=2
 # process, not control-group: a boxd restart must signal only boxd, never

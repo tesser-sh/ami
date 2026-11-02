@@ -43,7 +43,7 @@ curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /usr/local/
 /usr/local/fnm/fnm default 24
 for b in node npm npx corepack; do ln -sf /usr/local/fnm/aliases/default/bin/$b /usr/local/bin/$b; done
 PATH=/usr/local/bin:$PATH /usr/local/bin/corepack enable --install-directory /usr/local/bin
-sed -i 's|^PATH="|PATH="/usr/local/fnm/aliases/default/bin:|' /etc/environment
+sed -i 's|^PATH="\(.*/usr/local/bin\)|PATH="\1:/usr/local/fnm/aliases/default/bin|' /etc/environment
 printf '%s\n' 'export FNM_DIR=/usr/local/fnm' 'export PATH=/usr/local/fnm:$PATH' 'eval "$(fnm env --use-on-cd --shell bash)"' > /etc/profile.d/fnm.sh
 chown -R ubuntu:ubuntu /usr/local/fnm
 
