@@ -11,7 +11,7 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
   - build tools, git (from the git-core PPA), docker with compose and buildx, rsync, nbd-client (boxd streams repo snapshots onto a box through it);
   - node 22 and 24 through fnm;
   - bun through [`shim/bun`](shim/bun), installed as `bun` and `bunx`. It runs the version the repo pins, from the nearest `.bun-version` or `"packageManager": "bun@<version>"` in a `package.json` at or above the working directory, and installs that release from bun's GitHub releases under `~/.bun/versions` the first time it runs, where boxd's warm-up from a sibling box can bring it along. A repo that pins nothing gets the newest bun as of the build;
-  - uv for python, and mise for ruby. mise installs only precompiled ruby (`ruby.compile = false`) and reads `.ruby-version`, so `mise install` gets the repo's ruby, and its shims are on every PATH. Both are the newest releases as of the build;
+  - uv for python, and mise for ruby. mise installs only precompiled ruby (`ruby.compile = false`) and reads `.ruby-version`, so `mise install` gets the repo's ruby. It trusts every mise config under `/home/ubuntu`, and its shims are on every PATH. Both are the newest releases as of the build;
   - passwordless sudo for `ubuntu`;
   - no login banner: sshd's `pam_motd` is off, so a new ssh session doesn't wait on update-motd's scripts;
   - higher inotify limits;

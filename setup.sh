@@ -68,7 +68,7 @@ printf '%s\n' 'export PATH=$HOME/.bun/bin:$PATH' > /etc/profile.d/bun.sh
 curl -fsSL https://astral.sh/uv/install.sh | UV_UNMANAGED_INSTALL=/usr/local/bin sh
 curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 install -d /etc/mise
-printf '%s\n' '[settings]' 'ruby.compile = false' 'idiomatic_version_file_enable_tools = ["ruby"]' > /etc/mise/config.toml
+printf '%s\n' '[settings]' 'ruby.compile = false' 'idiomatic_version_file_enable_tools = ["ruby"]' 'trusted_config_paths = ["/home/ubuntu"]' > /etc/mise/config.toml
 sed -i 's|^PATH="|PATH="/home/ubuntu/.local/share/mise/shims:|' /etc/environment
 printf '%s\n' 'export PATH=$HOME/.local/share/mise/shims:$PATH' > /etc/profile.d/mise.sh
 
