@@ -64,6 +64,14 @@ chown -R ubuntu:ubuntu /usr/local/bun
 sed -i 's|^PATH="|PATH="/home/ubuntu/.bun/bin:|' /etc/environment
 printf '%s\n' 'export PATH=$HOME/.bun/bin:$PATH' > /etc/profile.d/bun.sh
 
+# uv for python and mise for ruby, on every PATH. mise never compiles a ruby.
+curl -fsSL https://astral.sh/uv/install.sh | UV_UNMANAGED_INSTALL=/usr/local/bin sh
+curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
+install -d /etc/mise
+printf '%s\n' '[settings]' 'ruby.compile = false' 'idiomatic_version_file_enable_tools = ["ruby"]' 'trusted_config_paths = ["/home/ubuntu"]' > /etc/mise/config.toml
+sed -i 's|^PATH="|PATH="/home/ubuntu/.local/share/mise/shims:|' /etc/environment
+printf '%s\n' 'export PATH=$HOME/.local/share/mise/shims:$PATH' > /etc/profile.d/mise.sh
+
 usermod -aG docker ubuntu
 systemctl enable docker
 echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tesser-ubuntu

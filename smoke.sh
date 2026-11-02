@@ -10,6 +10,8 @@ echo "kernel $(uname -r)"
 
 systemctl start docker
 docker buildx version
+uv --version
+[[ $(sudo -u ubuntu -H mise settings get ruby.compile) == false ]]
 
 # name, image, readiness command run inside the container
 checks=(
