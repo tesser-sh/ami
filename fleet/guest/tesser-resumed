@@ -1,0 +1,29 @@
+#!/bin/bash
+# The host's line into the guest, on vsock port 1024: one command per
+# connection. resumed: the clock jumped over a snapshot, boxd re-syncs.
+# ready: a template has settled. personalize: a box restored from a template
+# takes its own address, entropy, ssh host keys, and boots as a box.
+read -r cmd arg ip seed || exit 0
+case "$cmd" in
+  resumed)
+    date -u -s "@$arg" >/dev/null
+    systemctl kill -s USR2 --kill-whom=main tesser-boxd 2>/dev/null || true
+    echo ok ;;
+  ready)
+    systemctl is-system-running --wait >/dev/null 2>&1 || true
+    sync
+    echo ok ;;
+  personalize)
+    [ -e /run/tesser/template ] || { echo "not a template"; exit 0; }
+    date -u -s "@$arg" >/dev/null
+    echo "$seed" > /dev/urandom
+    ip addr flush dev eth0
+    ip addr add "$ip/9" dev eth0
+    ip route replace default via 10.128.0.1 dev eth0 onlink
+    rm -f /etc/ssh/ssh_host_*
+    /usr/local/sbin/tesser-hostkeys
+    rm /run/tesser/template
+    systemctl start --no-block tesser-boot
+    echo ok ;;
+  ping) echo pong ;;
+esac

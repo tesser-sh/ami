@@ -1,0 +1,77 @@
+#!/bin/bash
+# Makes a launch of the host image a fleet host, on every boot. The user data
+# is JSON, never a script: the host's id, token, cell and bucket, and the
+# hostd build and guest image it runs. hostd comes from the bucket and runs
+# only if its sha256 is the one the cell named; hostd checks the image's.
+set -euo pipefail
+imds=http://169.254.169.254
+s3=
+etc=/etc/tesser
+opt=/opt/tesser
+srv=/srv
+tries=10
+pause=3
+retry() { for _ in $(seq "$tries"); do "$@" && return 0; sleep "$pause"; done; return 1; }
+get() { curl -fsS --connect-timeout 5 --max-time 120 "$@"; }
+refuse() { echo "tesser-host-boot: refusing $1" >&2; exit 1; }
+dl=$(mktemp -d)
+trap 'rm -rf "$dl"' EXIT
+token=$(retry get -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' "$imds/latest/api/token")
+metadata() { retry get -H "X-aws-ec2-metadata-token: $token" "$imds/latest/$1"; }
+metadata user-data > "$dl/user-data"
+jq -e '
+  def is(re): type == "string" and test(re);
+  type == "object"
+  and (keys == ["bucket", "cellUrl", "hostId", "hostd", "image", "token"])
+  and (.hostId | is("^h-[0-9a-f]{12}$"))
+  and (.token | is("^tsr_host_[0-9a-f]{64}$"))
+  and (.cellUrl | is("^https://[a-z0-9.-]+(:[0-9]{1,5})?$"))
+  and (.bucket | is("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"))
+  and (.hostd | type == "object" and keys == ["sha256", "version"] and (.version | is("^hostd-[0-9a-f]{12}$")) and (.sha256 | is("^[0-9a-f]{64}$")))
+  and (.image | type == "object" and keys == ["id", "kernel", "root"] and (.id | is("^[a-z0-9-]{1,64}$")) and (.root | is("^[0-9a-f]{64}$")) and (.kernel | is("^[0-9a-f]{64}$")))
+' "$dl/user-data" > /dev/null 2>&1 || refuse "user-data"
+field() { jq -r "$1" "$dl/user-data"; }
+bucket=$(field .bucket)
+version=$(field .hostd.version)
+sha256=$(field .hostd.sha256)
+region=$(metadata meta-data/placement/region)
+
+swapoff -a
+[ -z "$(swapon --noheadings)" ] || refuse "to run with swap on"
+
+if ! mountpoint -q "$srv"; then
+  disk=
+  for d in $(lsblk -dpno NAME,TYPE | awk '$2 == "disk" { print $1 }'); do
+    [ "$(lsblk -no NAME "$d" | wc -l)" = 1 ] || continue
+    findmnt -S "$d" > /dev/null && continue
+    case "$(blkid -o value -s TYPE "$d" || true)" in "" | xfs) disk=$d; break ;; esac
+  done
+  [ -n "$disk" ] || refuse "to start without an empty disk for $srv"
+  # XFS with reflinks: every box's disk starts as a free copy of the guest image.
+  [ -n "$(blkid -o value -s TYPE "$disk" || true)" ] || mkfs.xfs -q -m reflink=1 "$disk"
+  mkdir -p "$srv"
+  echo "UUID=$(blkid -o value -s UUID "$disk") $srv xfs noatime,nofail 0 2" >> /etc/fstab
+  mount "$srv"
+fi
+mkdir -p "$srv/golden" "$srv/vms" "$srv/jail"
+
+hostd=$opt/$version
+if [ ! -x "$hostd" ]; then
+  role=$(metadata meta-data/iam/security-credentials/ | head -1)
+  metadata "meta-data/iam/security-credentials/$role" > "$dl/creds"
+  (umask 077 && jq -r '"user = \"\(.AccessKeyId):\(.SecretAccessKey)\"\nheader = \"x-amz-security-token: \(.Token)\""' "$dl/creds" > "$dl/curlrc")
+  url=${s3:-https://$bucket.s3.$region.amazonaws.com}/hostd/$version/$sha256
+  retry get -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:s3" -o "$dl/hostd" "$url"
+  echo "$sha256  $dl/hostd" | sha256sum -c --quiet > /dev/null 2>&1 || refuse "hostd $version: sha256 is not $sha256"
+  install -D -m 755 "$dl/hostd" "$hostd"
+fi
+ln -sfn "$version" "$opt/hostd"
+
+install -d -m 700 "$etc"
+(umask 077 && jq --arg srv "$srv" '{
+  hostId, cellUrl, token, bucket, image,
+  golden: "\($srv)/golden", vms: "\($srv)/vms", jail: "\($srv)/jail",
+  firecracker: "/usr/local/bin/firecracker", jailer: "/usr/local/bin/jailer", snapshotEditor: "/usr/local/bin/snapshot-editor"
+}' "$dl/user-data" > "$etc/hostd.json")
+systemctl enable --now --no-block tesser-hostd
+echo "tesser-host-boot: $(field .hostId) runs $version"

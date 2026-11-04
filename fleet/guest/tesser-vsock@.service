@@ -1,0 +1,6 @@
+[Unit]
+Description=host to guest control
+[Service]
+ExecStart=/usr/local/sbin/tesser-resumed
+StandardInput=socket
+StandardOutput=socket

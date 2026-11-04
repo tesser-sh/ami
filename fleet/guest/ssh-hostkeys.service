@@ -1,0 +1,12 @@
+[Unit]
+Description=generate ssh host keys on first boot
+DefaultDependencies=no
+After=local-fs.target tesser-template.service
+Before=ssh.socket ssh.service sockets.target
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+ConditionPathExists=!/run/tesser/template
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tesser-hostkeys
+[Install]
+WantedBy=sockets.target

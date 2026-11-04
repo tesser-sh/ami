@@ -1,0 +1,14 @@
+[Unit]
+Description=tesser fleet host bootstrap from user-data
+After=network-online.target
+Wants=network-online.target
+Before=tesser-hostd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tesser-host-boot
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

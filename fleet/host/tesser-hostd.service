@@ -1,0 +1,15 @@
+[Unit]
+Description=tesser fleet host
+After=tesser-host-boot.service srv.mount
+Requires=tesser-host-boot.service
+ConditionPathExists=/etc/tesser/hostd.json
+
+[Service]
+ExecStart=/opt/tesser/hostd /etc/tesser/hostd.json
+Restart=always
+RestartSec=2
+# Firecracker runs detached under the jailer; hostd re-adopts it on restart.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

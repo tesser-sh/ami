@@ -1,0 +1,3 @@
+#!/bin/sh
+set -e
+for t in ed25519 ecdsa; do [ -f "/etc/ssh/ssh_host_${t}_key" ] || ssh-keygen -q -t "$t" -N "" -f "/etc/ssh/ssh_host_${t}_key"; done
