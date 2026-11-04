@@ -86,7 +86,6 @@ async function boot() {
 function config(overrides = {}) {
   return JSON.stringify({
     hostId: "h-0123456789ab",
-    token: `tsr_host_${"c".repeat(64)}`,
     cellUrl: "https://api.tesser.sh",
     bucket: "tesser-fleet-prod-131798513069",
     hostd: { version: VERSION, sha256: SHA },
@@ -109,7 +108,6 @@ test("the hostd the cell named is fetched with the host's role, installed, confi
   assert.deepEqual(cfg, {
     hostId: "h-0123456789ab",
     cellUrl: "https://api.tesser.sh",
-    token: `tsr_host_${"c".repeat(64)}`,
     bucket: "tesser-fleet-prod-131798513069",
     image: IMAGE,
     golden: `${run.root}/srv/golden`,
@@ -139,7 +137,6 @@ test("user-data that is not the expected JSON refuses to boot before anything is
     "[]",
     config({ extra: "x" }),
     config({ hostId: "h-$(reboot)" }),
-    config({ token: "tsr_host_short" }),
     config({ cellUrl: "http://api.tesser.sh" }),
     config({ cellUrl: "https://api.tesser.sh/evil" }),
     config({ bucket: "Bad_Bucket" }),

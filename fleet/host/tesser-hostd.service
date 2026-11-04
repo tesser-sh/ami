@@ -10,6 +10,7 @@ Restart=always
 RestartSec=2
 # Firecracker runs detached under the jailer; hostd re-adopts it on restart.
 KillMode=process
+SuccessExitStatus=130
 
 [Install]
 WantedBy=multi-user.target

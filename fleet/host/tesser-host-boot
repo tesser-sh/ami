@@ -1,7 +1,8 @@
 #!/bin/bash
 # Makes a launch of the host image a fleet host, on every boot. The user data
-# is JSON, never a script: the host's id, token, cell and bucket, and the
-# hostd build and guest image it runs. hostd comes from the bucket and runs
+# is JSON, never a script: the host's id, cell and bucket, and the hostd
+# build and guest image it runs; hostd proves which instance it is with the
+# instance role's web identity token. hostd comes from the bucket and runs
 # only if its sha256 is the one the cell named; hostd checks the image's.
 set -euo pipefail
 imds=http://169.254.169.254
@@ -22,9 +23,8 @@ metadata user-data > "$dl/user-data"
 jq -e '
   def is(re): type == "string" and test(re);
   type == "object"
-  and (keys == ["bucket", "cellUrl", "hostId", "hostd", "image", "token"])
+  and (keys == ["bucket", "cellUrl", "hostId", "hostd", "image"])
   and (.hostId | is("^h-[0-9a-f]{12}$"))
-  and (.token | is("^tsr_host_[0-9a-f]{64}$"))
   and (.cellUrl | is("^https://[a-z0-9.-]+(:[0-9]{1,5})?$"))
   and (.bucket | is("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"))
   and (.hostd | type == "object" and keys == ["sha256", "version"] and (.version | is("^hostd-[0-9a-f]{12}$")) and (.sha256 | is("^[0-9a-f]{64}$")))
@@ -50,7 +50,7 @@ if ! mountpoint -q "$srv"; then
   # XFS with reflinks: every box's disk starts as a free copy of the guest image.
   [ -n "$(blkid -o value -s TYPE "$disk" || true)" ] || mkfs.xfs -q -m reflink=1 "$disk"
   mkdir -p "$srv"
-  echo "UUID=$(blkid -o value -s UUID "$disk") $srv xfs noatime,nofail 0 2" >> /etc/fstab
+  echo "UUID=$(blkid -o value -s UUID "$disk") $srv xfs noatime,prjquota,nofail 0 2" >> /etc/fstab
   mount "$srv"
 fi
 mkdir -p "$srv/golden" "$srv/vms" "$srv/jail"
@@ -69,7 +69,7 @@ ln -sfn "$version" "$opt/hostd"
 
 install -d -m 700 "$etc"
 (umask 077 && jq --arg srv "$srv" '{
-  hostId, cellUrl, token, bucket, image,
+  hostId, cellUrl, bucket, image,
   golden: "\($srv)/golden", vms: "\($srv)/vms", jail: "\($srv)/jail",
   firecracker: "/usr/local/bin/firecracker", jailer: "/usr/local/bin/jailer", snapshotEditor: "/usr/local/bin/snapshot-editor"
 }' "$dl/user-data" > "$etc/hostd.json")

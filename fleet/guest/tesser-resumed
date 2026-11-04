@@ -2,8 +2,9 @@
 # The host's line into the guest, on vsock port 1024: one command per
 # connection. resumed: the clock jumped over a snapshot, boxd re-syncs.
 # ready: a template has settled. personalize: a box restored from a template
-# takes its own address, entropy, ssh host keys, and boots as a box.
-read -r cmd arg ip seed || exit 0
+# takes its own address, entropy, machine id, ssh host keys, and boots as a
+# box.
+read -r cmd arg ip seed mid || exit 0
 case "$cmd" in
   resumed)
     date -u -s "@$arg" >/dev/null
@@ -15,8 +16,13 @@ case "$cmd" in
     echo ok ;;
   personalize)
     [ -e /run/tesser/template ] || { echo "not a template"; exit 0; }
+    [[ "$mid" =~ ^[0-9a-f]{32}$ ]] || { echo "bad machine id"; exit 0; }
     date -u -s "@$arg" >/dev/null
     echo "$seed" > /dev/urandom
+    python3 -c 'import fcntl, os; fd = os.open("/dev/urandom", os.O_WRONLY); fcntl.ioctl(fd, 0x5207); os.close(fd)' || { echo "reseed failed"; exit 0; }
+    umount /etc/machine-id 2>/dev/null || true
+    echo "$mid" > /etc/machine-id
+    systemctl restart --no-block systemd-journald
     ip addr flush dev eth0
     ip addr add "$ip/9" dev eth0
     ip route replace default via 10.128.0.1 dev eth0 onlink
