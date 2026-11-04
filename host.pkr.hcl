@@ -55,7 +55,6 @@ source "amazon-ebs" "host" {
   ami_name        = local.ami_name
   ami_description = "tesser fleet host image, github.com/tesser-sh/ami at ${var.source_sha}"
   encrypt_boot    = false
-  ami_groups      = ["all"]
 
   run_tags        = local.tags
   run_volume_tags = local.tags
