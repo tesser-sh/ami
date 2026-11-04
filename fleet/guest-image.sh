@@ -63,6 +63,7 @@ TimeoutStartSec=3600
 WantedBy=multi-user.target
 EOF
 chroot "$mnt" systemctl enable tesser-build.service
+install -D -m 644 "$repo/fleet/guest/resolved.conf" "$mnt/etc/systemd/resolved.conf.d/10-tesser.conf"
 umount "$mnt"
 
 ip tuntap add "$tap" mode tap
@@ -85,7 +86,7 @@ boot() {
   cat > "$work/vm.json" <<EOF
 {"boot-source":{"kernel_image_path":"$vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw $1"},
  "drives":[{"drive_id":"root","path_on_host":"$work/root.ext4","is_root_device":true,"is_read_only":false}],
- "machine-config":{"vcpu_count":$(nproc),"mem_size_mib":8192},
+ "machine-config":{"vcpu_count":$(( $(nproc) > 32 ? 32 : $(nproc) )),"mem_size_mib":8192},
  "network-interfaces":[{"iface_id":"eth0","guest_mac":"06:00:0a:c7:00:02","host_dev_name":"$tap"}],
  "vsock":{"guest_cid":3,"uds_path":"$work/v.sock"}}
 EOF
