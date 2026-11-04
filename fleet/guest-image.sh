@@ -25,12 +25,10 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$mnt" "$work/src"
 
-images=https://cloud-images.ubuntu.com/noble/current
-curl -fsSL -o "$work/noble.img" "$images/noble-server-cloudimg-amd64.img"
-want=$(curl -fsSL "$images/SHA256SUMS" | awk '$2 == "*noble-server-cloudimg-amd64.img" {print $1}')
-[ -n "$want" ] || { echo "guest-image: no published checksum for the cloud image" >&2; exit 1; }
-echo "$want  $work/noble.img" | sha256sum -c --quiet
-echo "guest-image: base noble-server-cloudimg-amd64.img $want"
+source "$repo/fleet/versions"
+curl -fsSL -o "$work/noble.img" "https://cloud-images.ubuntu.com/releases/noble/release-$noble/ubuntu-24.04-server-cloudimg-amd64.img"
+echo "$noble_sha256  $work/noble.img" | sha256sum -c --quiet
+echo "guest-image: base noble release-$noble $noble_sha256"
 qemu-img convert -O raw "$work/noble.img" "$work/noble.raw"
 loop=$(losetup -fP --show "$work/noble.raw")
 truncate -s 40G "$work/root.ext4"

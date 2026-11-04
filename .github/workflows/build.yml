@@ -210,11 +210,16 @@ jobs:
       - name: Rotate, keep the newest 2 public images of each kind per region
         run: |
           set -euo pipefail
+          # The release before this one is what tesser runs until ami-bump moves
+          # it, so its AMIs stay even when a failed run left a newer one behind.
+          git show HEAD~1:amis.json > prev-box.json
+          { git show HEAD~1:fleet.json 2>/dev/null || echo '{}'; } | jq '.hostAmis // {}' > prev-host.json
           rotate() {
             local region=$1 kind=$2
             aws ec2 describe-images --region "$region" --owners self \
               --filters "Name=name,Values=tesser-$kind-*" "Name=tag:tesser:ami,Values=$kind" > images.json
-            keep=$(jq -c '[.Images[] | select(.Public)] | sort_by(.CreationDate) | reverse | .[:2] | map(.ImageId)' images.json)
+            keep=$(jq -c --arg prev "$(jq -r --arg r "$region" '.[$r] // ""' "prev-$kind.json")" \
+              '[.Images[] | select(.Public)] | sort_by(.CreationDate) | reverse | .[:2] | map(.ImageId) + [$prev]' images.json)
             jq -c --argjson keep "$keep" '.Images[] | select(.ImageId as $id | $keep | index($id) | not)
               | {id: .ImageId, snapshots: [.BlockDeviceMappings[].Ebs.SnapshotId // empty]}' images.json |
             while read -r image; do
