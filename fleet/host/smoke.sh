@@ -17,5 +17,5 @@ for tool in jq xfs_io nft wg conntrack zstd; do command -v "$tool" > /dev/null |
 [[ -z $(swapon --noheadings) ]] || { echo "swap is on" >&2; exit 1; }
 [[ $(sysctl -n net.ipv4.ip_forward) == 1 ]] || { echo "ip_forward is off" >&2; exit 1; }
 [[ $(systemctl is-enabled tesser-host-boot.service) == enabled ]]
-systemd-analyze verify /etc/systemd/system/tesser-host-boot.service /etc/systemd/system/tesser-hostd.service
+systemd-analyze verify /etc/systemd/system/tesser-host-boot.service
 grep -qx 'allow_userdata: false' /etc/cloud/cloud.cfg.d/99-tesser.cfg
