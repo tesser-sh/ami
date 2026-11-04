@@ -3,6 +3,10 @@
 # of stock Ubuntu comes from this script and the files next to it.
 set -euo pipefail
 files=${TESSER_FILES:?}
+# ec2: the box AMI. firecracker: the root disk of a fleet microVM, which boots
+# fleet/kernel.sh's kernel and sleeps by memory snapshot, not by hibernation.
+target=${TESSER_TARGET:-ec2}
+[[ $target == ec2 || $target == firecracker ]] || { echo "setup.sh: unknown target $target" >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
 printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/99tesser
@@ -27,12 +31,14 @@ apt-get install -y git
 # and 6.17 no longer gets fixes, so boxes run the 24.04 LTS kernel, which
 # stays on 6.8 and is patched until 2029. Every other kernel goes, so grub
 # boots this one; smoke.sh fails the build if a box would boot anything else.
-kernel=linux-aws-lts-24.04
-apt-get install -y "$kernel"
-abi=$(dpkg-query -W -f='${Depends}' "linux-image-${kernel#linux-}" | grep -oP 'linux-image-\K[0-9][^ ,]*')
-old=$(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' 'linux-*' | sed -n 's/^ii *//p' |
-  grep -E '^linux-(image-|headers-|tools-|modules-)?aws$|[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | grep -vF "${abi%-aws}" || true)
-[[ -z $old ]] || apt-get purge -y $old
+if [[ $target == ec2 ]]; then
+  kernel=linux-aws-lts-24.04
+  apt-get install -y "$kernel"
+  abi=$(dpkg-query -W -f='${Depends}' "linux-image-${kernel#linux-}" | grep -oP 'linux-image-\K[0-9][^ ,]*')
+  old=$(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' 'linux-*' | sed -n 's/^ii *//p' |
+    grep -E '^linux-(image-|headers-|tools-|modules-)?aws$|[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | grep -vF "${abi%-aws}" || true)
+  [[ -z $old ]] || apt-get purge -y $old
+fi
 apt-get autoremove --purge -y
 
 # node 22 and 24 through fnm, 24 the default, on every PATH.
@@ -90,12 +96,31 @@ install -m 644 "$files/boot/tesser-boot.service" /etc/systemd/system/tesser-boot
 install -m 755 "$files/boot/tesser-boot" /usr/local/sbin/tesser-boot
 systemctl enable tesser-boot.service
 
-# Hibernation: tesser's handler replaces Ubuntu's for EC2's sleep button, and
-# Ubuntu's resume hook (a swapoff that pages the whole image back in from EBS
-# 4 KB at a time) never runs.
-install -m 755 "$files/hibernate/tesser-hibernate" /usr/local/sbin/tesser-hibernate
-install -D -m 755 "$files/hibernate/pagecache" /usr/local/lib/tesser/pagecache
-install -m 644 "$files/hibernate/tesser-sleep" /etc/acpi/events/tesser-sleep
-dpkg-divert --rename --divert /etc/acpi/hibinit-sleep.disabled --add /etc/acpi/events/hibinit-sleep
-dpkg-divert --rename --divert /usr/lib/ec2-hibinit-agent/system-sleep.disabled --add /lib/systemd/system-sleep/hibinit-agent
-install -D -m 644 "$files/config/logind.conf" /etc/systemd/logind.conf.d/tesser.conf
+if [[ $target == ec2 ]]; then
+  # Hibernation: tesser's handler replaces Ubuntu's for EC2's sleep button, and
+  # Ubuntu's resume hook (a swapoff that pages the whole image back in from EBS
+  # 4 KB at a time) never runs.
+  install -m 755 "$files/hibernate/tesser-hibernate" /usr/local/sbin/tesser-hibernate
+  install -D -m 755 "$files/hibernate/pagecache" /usr/local/lib/tesser/pagecache
+  install -m 644 "$files/hibernate/tesser-sleep" /etc/acpi/events/tesser-sleep
+  dpkg-divert --rename --divert /etc/acpi/hibinit-sleep.disabled --add /etc/acpi/events/hibinit-sleep
+  dpkg-divert --rename --divert /usr/lib/ec2-hibinit-agent/system-sleep.disabled --add /lib/systemd/system-sleep/hibinit-agent
+  install -D -m 644 "$files/config/logind.conf" /etc/systemd/logind.conf.d/tesser.conf
+else
+  # A microVM: its host snapshots it, starts it from a per-size template and
+  # gives it an identity over vsock, and fakes EC2's metadata with
+  # Firecracker's, so tesser-boot runs as it does on EC2.
+  guest=$files/fleet/guest
+  install -m 755 "$guest/tesser-hostkeys" /usr/local/sbin/tesser-hostkeys
+  install -m 755 "$guest/tesser-resumed" /usr/local/sbin/tesser-resumed
+  for unit in ssh-hostkeys.service tesser-template.service tesser-vsock.socket tesser-vsock@.service; do
+    install -m 644 "$guest/$unit" "/etc/systemd/system/$unit"
+  done
+  install -D -m 644 "$guest/tesser-boot-fleet.conf" /etc/systemd/system/tesser-boot.service.d/fleet.conf
+  install -D -m 644 "$guest/resolved.conf" /etc/systemd/resolved.conf.d/10-tesser.conf
+  systemctl enable ssh-hostkeys.service tesser-template.service tesser-vsock.socket
+  systemctl mask systemd-networkd-wait-online.service serial-getty@ttyS0.service multipathd.service multipathd.socket \
+    snapd.service snapd.socket snapd.seeded.service lxd-installer.socket
+  install -d /etc/tesser
+  touch /etc/tesser/snapshots
+fi

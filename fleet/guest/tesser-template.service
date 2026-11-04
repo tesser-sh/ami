@@ -1,0 +1,12 @@
+# A template boots once per host and size and is snapshotted before it has an
+# identity; a new box is a restore of it that its host then personalizes.
+[Unit]
+Description=boot as a template, without an identity
+DefaultDependencies=no
+ConditionKernelCommandLine=tesser.template
+Before=sysinit.target ssh-hostkeys.service tesser-boot.service
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'mkdir -p /run/tesser && touch /run/tesser/template'
+[Install]
+WantedBy=sysinit.target
