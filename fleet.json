@@ -1,0 +1,10 @@
+{
+  "hostAmis": {
+    "us-west-2": "ami-046feb4d8097c412e"
+  },
+  "image": {
+    "id": "build-41907652866",
+    "root": "b4a1bfed5aa4884fb26a5d8784bfb40a04eca687ec54cf807162760cc88b0161",
+    "kernel": "2074b6c04446cb40d6b3880420e2c598b7151aa83d8d43f844b02003bd08c3ab"
+  }
+}
