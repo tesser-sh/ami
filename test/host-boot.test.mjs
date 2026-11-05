@@ -23,6 +23,7 @@ let userData = "";
 let s3Hits = [];
 let stsHits = [];
 let cellHits = [];
+let cellAnswer = null;
 
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 
@@ -60,8 +61,7 @@ before(async () => {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       cellHits.push({ path: req.url, authorization: req.headers.authorization ?? "", body: JSON.parse(body) });
-      const keys = JSON.parse(body).keys;
-      res.writeHead(200).end(JSON.stringify({ urls: Object.fromEntries(keys.map((k) => [k, `http://127.0.0.1:${s3.port}/${k}`])) }));
+      res.writeHead(200).end(JSON.stringify(cellAnswer ?? { accessKeyId: "ASIAHOSTDREADER0", secretAccessKey: "temp/secret+key=", sessionToken: "temp+session/token=", expiration: "2099-01-01T00:00:00Z", bucket: "tesser-fleet-images-prod-131798513069-us-west-2", region: "us-west-2" }));
     });
   });
   imds.port = await listen(imds);
@@ -121,16 +121,27 @@ function config(overrides = {}) {
   });
 }
 
-test("the hostd the cell named is fetched with the host's role, installed, configured and started", async () => {
+test("the hostd the cell named is fetched with credentials the cell gave for the host's identity token, installed, configured and started", async () => {
   userData = config();
   s3Hits = [];
+  stsHits = [];
+  cellHits = [];
+  cellAnswer = null;
   const run = await boot();
   assert.equal(run.code, 0, run.stderr);
   assert.equal(readFileSync(join(run.root, `opt/tesser/${VERSION}`), "utf8"), HOSTD);
   assert.equal(readlinkSync(join(run.root, "opt/tesser/hostd")), VERSION);
+  assert.equal(stsHits.length, 1);
+  assert.match(stsHits[0].authorization, /^AWS4-HMAC-SHA256 Credential=AKIATEST\/\d{8}\/us-west-2\/sts\/aws4_request/);
+  assert.equal(stsHits[0].token, "session-token");
+  assert.equal(stsHits[0].body.get("Action"), "GetWebIdentityToken");
+  assert.equal(stsHits[0].body.get("Audience.member.1"), "https://api.tesser.sh");
+  assert.deepEqual(cellHits, [{ path: "/v1/fleet/creds", authorization: "Bearer host-identity-token", body: { keys: [`hostd/${VERSION}/${SHA}`] } }]);
   assert.equal(s3Hits.length, 1);
-  assert.match(s3Hits[0].authorization, /^AWS4-HMAC-SHA256 Credential=AKIATEST\/\d{8}\/us-west-2\/s3\/aws4_request/);
-  assert.equal(s3Hits[0].token, "session-token");
+  assert.equal(s3Hits[0].path, `/hostd/${VERSION}/${SHA}`);
+  assert.match(s3Hits[0].authorization, /^AWS4-HMAC-SHA256 Credential=ASIAHOSTDREADER0\/\d{8}\/us-west-2\/s3\/aws4_request/);
+  assert.equal(s3Hits[0].token, "temp+session/token=");
+  assert.doesNotMatch(run.stderr, /temp\/secret|temp\+session/);
   const cfg = JSON.parse(readFileSync(join(run.root, "etc/tesser/hostd.json"), "utf8"));
   assert.deepEqual(cfg, {
     hostId: "h-0123456789ab",
@@ -148,24 +159,18 @@ test("the hostd the cell named is fetched with the host's role, installed, confi
   assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block tesser-hostd\n");
 });
 
-test("when the cell signs files, hostd comes from the url it signed for the host's identity token", async () => {
-  userData = config({ files: "cell" });
-  s3Hits = [];
-  stsHits = [];
-  cellHits = [];
-  const run = await boot();
-  assert.equal(run.code, 0, run.stderr);
-  assert.equal(readFileSync(join(run.root, `opt/tesser/${VERSION}`), "utf8"), HOSTD);
-  assert.equal(stsHits.length, 1);
-  assert.match(stsHits[0].authorization, /^AWS4-HMAC-SHA256 Credential=AKIATEST\/\d{8}\/us-west-2\/sts\/aws4_request/);
-  assert.equal(stsHits[0].token, "session-token");
-  assert.equal(stsHits[0].body.get("Action"), "GetWebIdentityToken");
-  assert.equal(stsHits[0].body.get("Audience.member.1"), "https://api.tesser.sh");
-  assert.deepEqual(cellHits, [{ path: "/v1/fleet/files", authorization: "Bearer host-identity-token", body: { keys: [`hostd/${VERSION}/${SHA}`] } }]);
-  assert.deepEqual(s3Hits, [{ path: `/hostd/${VERSION}/${SHA}`, authorization: "", token: "" }]);
-  const cfg = JSON.parse(readFileSync(join(run.root, "etc/tesser/hostd.json"), "utf8"));
-  assert.equal(cfg.files, "cell");
-  assert.equal(cfg.bucket, "tesser-fleet-prod-131798513069");
+test("an answer from the cell that is not credentials for a bucket fetches nothing", async () => {
+  for (const answer of [{ urls: {} }, { accessKeyId: "ASIAHOSTDREADER0", secretAccessKey: "s", sessionToken: "t", bucket: "x.s3.evil.com/", region: "us-west-2" }, { accessKeyId: "ASIAHOSTDREADER0", secretAccessKey: "s", sessionToken: "t", bucket: "tesser-fleet-images", region: "us-west-2/../x" }]) {
+    userData = config();
+    s3Hits = [];
+    cellAnswer = answer;
+    const run = await boot();
+    assert.notEqual(run.code, 0);
+    assert.match(run.stderr, /tesser-host-boot: refusing hostd .* the cell sent no credentials/);
+    assert.equal(s3Hits.length, 0);
+    assert.equal(existsSync(join(run.root, "etc/tesser/hostd.json")), false);
+  }
+  cellAnswer = null;
 });
 
 test("a hostd whose sha256 is not the one the cell named is never installed", async () => {
@@ -191,8 +196,7 @@ test("user-data that is not the expected JSON refuses to boot before anything is
     config({ hostd: { version: VERSION, sha256: SHA, extra: 1 } }),
     config({ image: { ...IMAGE, id: "../x" } }),
     config({ image: { id: IMAGE.id, root: IMAGE.root } }),
-    config({ files: "s3" }),
-    config({ files: true }),
+    config({ files: "cell" }),
   ];
   for (const data of bad) {
     userData = data;

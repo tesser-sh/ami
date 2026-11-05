@@ -20,8 +20,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FLEET_BUCKET: tesser-fleet-prod-131798513069
-  FLEET_IMAGES_BUCKET: tesser-fleet-images-prod-131798513069
+  FLEET_IMAGES_BUCKETS: '{"us-west-2": "tesser-fleet-images-prod-131798513069-us-west-2", "us-east-1": "tesser-fleet-images-prod-131798513069-us-east-1"}'
 
 jobs:
   check:
@@ -84,9 +83,8 @@ jobs:
 
   # The root disk and kernel every fleet microVM boots, built and booted in
   # Firecracker on the runner's KVM, then published under images/build-<run id>/
-  # to the images bucket, whose urls the cell signs for its hosts, and to the
-  # fleet bucket for hosts from before that. Nothing reads them until tesser
-  # pins this release.
+  # to the images bucket in each region, which hosts read with credentials the
+  # cell gives them. Nothing reads them until tesser pins this release.
   guest:
     needs: check
     runs-on: ubuntu-24.04
@@ -138,12 +136,11 @@ jobs:
       - name: Publish
         run: |
           set -euo pipefail
-          for bucket in "$FLEET_IMAGES_BUCKET" "$FLEET_BUCKET"; do
+          jq -r 'to_entries[] | "\(.key) \(.value)"' <<< "$FLEET_IMAGES_BUCKETS" | while read -r region bucket; do
             for f in root.ext4.zst vmlinux.zst; do
-              aws s3 cp --only-show-errors "$f" "s3://$bucket/images/$IMAGE_ID/$f"
+              aws s3 cp --only-show-errors --region "$region" "$f" "s3://$bucket/images/$IMAGE_ID/$f"
             done
           done
-          aws s3 sync --only-show-errors "s3://$FLEET_BUCKET/images/" "s3://$FLEET_IMAGES_BUCKET/images/"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -171,8 +168,8 @@ jobs:
           amis() { jq -r '.builds[-1].artifact_id | split(",") | map(split(":") | {(.[0]): .[1]}) | add' "$1"; }
           amis built/box-manifest/manifest.json > amis.json
           jq -n --argjson hostAmis "$(amis built/host-manifest/manifest.json)" --slurpfile image built/guest/guest.json \
-            --arg imagesBucket "$FLEET_IMAGES_BUCKET" \
-            '{hostAmis: $hostAmis, image: $image[0], imagesBucket: $imagesBucket}' > fleet.json
+            --argjson imagesBuckets "$FLEET_IMAGES_BUCKETS" \
+            '{hostAmis: $hostAmis, image: $image[0], imagesBuckets: $imagesBuckets}' > fleet.json
           cat amis.json fleet.json
 
       - name: Commit amis.json and fleet.json
@@ -249,8 +246,9 @@ jobs:
           for region in $(jq -r '.hostAmis | keys[]' fleet.json); do rotate "$region" host; done
 
       # A public host AMI is launchable from any account. AWS caps public AMIs
-      # per region; this shares a host only while that leaves one slot for
-      # the next build's box AMI, which packer makes public as it builds.
+      # per region; this shares a host only while that leaves two slots: one
+      # for the next build's box AMI, which packer makes public as it builds,
+      # and one for a box AMI a failed run left public before rotation.
       - name: Share host AMIs publicly while the quota has room
         run: |
           set -euo pipefail
@@ -258,10 +256,10 @@ jobs:
             id=$(jq -r --arg r "$region" '.hostAmis[$r]' fleet.json)
             quota=$(aws service-quotas get-service-quota --region "$region" --service-code ec2 --quota-code L-0E3CBAB9 --query 'Quota.Value' --output text)
             public=$(aws ec2 describe-images --region "$region" --owners self --filters Name=is-public,Values=true --query 'length(Images)' --output text)
-            if [ "$((public + 2))" -le "${quota%.*}" ]; then
+            if [ "$((public + 3))" -le "${quota%.*}" ]; then
               aws ec2 modify-image-attribute --region "$region" --image-id "$id" --launch-permission 'Add=[{Group=all}]'
               echo "host $region $id is public ($((public + 1)) of ${quota%.*})"
             else
-              echo "::warning::host $region $id stays private: $public of ${quota%.*} public AMIs, and the next box AMI needs a slot"
+              echo "::warning::host $region $id stays private: $public of ${quota%.*} public AMIs leaves box AMIs fewer than two free"
             fi
           done
