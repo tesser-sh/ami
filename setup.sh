@@ -124,4 +124,8 @@ else
     snapd.service snapd.socket snapd.seeded.service lxd-installer.socket
   install -d /etc/tesser
   touch /etc/tesser/snapshots
+  # A box from a snapshot reinstalls its manifest's apt packages on every
+  # start. apt's hooks for the motd's update count and PackageKit, and
+  # man-db's index rebuild, add 12-14 s to that and nothing reads them.
+  rm -f /etc/apt/apt.conf.d/99update-notifier /etc/apt/apt.conf.d/20packagekit /var/lib/man-db/auto-update
 fi
