@@ -40,6 +40,9 @@ if [[ $target == ec2 ]]; then
   [[ -z $old ]] || apt-get purge -y $old
 fi
 apt-get autoremove --purge -y
+rm -f /etc/apt/apt.conf.d/99update-notifier /etc/apt/apt.conf.d/20packagekit
+echo 'man-db man-db/auto-update boolean false' | debconf-set-selections
+rm -f /var/lib/man-db/auto-update
 
 # node 22 and 24 through fnm, 24 the default, on every PATH.
 export FNM_DIR=/usr/local/fnm
