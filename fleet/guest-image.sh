@@ -64,6 +64,7 @@ WantedBy=multi-user.target
 EOF
 chroot "$mnt" systemctl enable tesser-build.service
 install -D -m 644 "$repo/fleet/guest/resolved.conf" "$mnt/etc/systemd/resolved.conf.d/10-tesser.conf"
+install -D -m 644 "$repo/fleet/guest/dirty.conf" "$mnt/etc/sysctl.d/60-tesser-dirty.conf"
 umount "$mnt"
 
 ip tuntap add "$tap" mode tap
