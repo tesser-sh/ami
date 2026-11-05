@@ -123,6 +123,9 @@ else
   install -D -m 644 "$guest/tesser-boot-fleet.conf" /etc/systemd/system/tesser-boot.service.d/fleet.conf
   install -D -m 644 "$guest/resolved.conf" /etc/systemd/resolved.conf.d/10-tesser.conf
   systemctl enable ssh-hostkeys.service tesser-template.service tesser-vsock.socket
+  # dockerd starts on its socket: a box's home stops it before it mounts.
+  systemctl disable docker.service containerd.service
+  systemctl enable docker.socket
   systemctl mask systemd-networkd-wait-online.service serial-getty@ttyS0.service multipathd.service multipathd.socket \
     snapd.service snapd.socket snapd.seeded.service lxd-installer.socket
   install -d /etc/tesser
