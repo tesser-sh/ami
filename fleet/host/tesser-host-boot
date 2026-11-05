@@ -1,12 +1,15 @@
 #!/bin/bash
 # Makes a launch of the host image a fleet host, on every boot. The user data
-# is JSON, never a script: the host's id, cell and bucket, and the hostd
-# build and guest image it runs; hostd proves which instance it is with the
-# instance role's web identity token. hostd comes from the bucket and runs
-# only if its sha256 is the one the cell named; hostd checks the image's.
+# is JSON, never a script: the host's id, cell and bucket, the hostd build
+# and guest image it runs, and whether the cell signs their urls; the host
+# proves which instance it is with the instance role's web identity token.
+# hostd comes from a url the cell signs, or else the bucket, and runs only if
+# its sha256 is the one the cell named; hostd checks the image's.
 set -euo pipefail
 imds=http://169.254.169.254
 s3=
+sts=
+cell=
 etc=/etc/tesser
 opt=/opt/tesser
 srv=/srv
@@ -23,7 +26,8 @@ metadata user-data > "$dl/user-data"
 jq -e '
   def is(re): type == "string" and test(re);
   type == "object"
-  and (keys == ["bucket", "cellUrl", "hostId", "hostd", "image"])
+  and (keys - ["files"] == ["bucket", "cellUrl", "hostId", "hostd", "image"])
+  and ((has("files") | not) or .files == "cell")
   and (.hostId | is("^h-[0-9a-f]{12}$"))
   and (.cellUrl | is("^https://[a-z0-9.-]+(:[0-9]{1,5})?$"))
   and (.bucket | is("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"))
@@ -32,6 +36,8 @@ jq -e '
 ' "$dl/user-data" > /dev/null 2>&1 || refuse "user-data"
 field() { jq -r "$1" "$dl/user-data"; }
 bucket=$(field .bucket)
+cellUrl=$(field .cellUrl)
+files=$(field '.files // ""')
 version=$(field .hostd.version)
 sha256=$(field .hostd.sha256)
 region=$(metadata meta-data/placement/region)
@@ -60,15 +66,29 @@ if [ ! -x "$hostd" ]; then
   role=$(metadata meta-data/iam/security-credentials/ | head -1)
   metadata "meta-data/iam/security-credentials/$role" > "$dl/creds"
   (umask 077 && jq -r '"user = \"\(.AccessKeyId):\(.SecretAccessKey)\"\nheader = \"x-amz-security-token: \(.Token)\""' "$dl/creds" > "$dl/curlrc")
-  url=${s3:-https://$bucket.s3.$region.amazonaws.com}/hostd/$version/$sha256
-  retry get -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:s3" -o "$dl/hostd" "$url"
+  key=hostd/$version/$sha256
+  if [ "$files" = cell ]; then
+    retry get -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:sts" -H 'accept: application/json' \
+      --data-urlencode Action=GetWebIdentityToken --data-urlencode Version=2011-06-15 --data-urlencode "Audience.member.1=$cellUrl" \
+      --data-urlencode SigningAlgorithm=RS256 --data-urlencode DurationSeconds=300 "${sts:-https://sts.$region.amazonaws.com/}" > "$dl/sts"
+    jq -r '.GetWebIdentityTokenResponse.GetWebIdentityTokenResult.WebIdentityToken // empty' "$dl/sts" > "$dl/token"
+    [ -s "$dl/token" ] || refuse "to boot without an identity token"
+    (umask 077 && printf 'header = "authorization: Bearer %s"\n' "$(cat "$dl/token")" > "$dl/bearer")
+    jq -nc --arg key "$key" '{keys: [$key]}' > "$dl/want"
+    retry get -K "$dl/bearer" -H 'content-type: application/json' --data-binary "@$dl/want" "${cell:-$cellUrl}/v1/fleet/files" > "$dl/signed"
+    url=$(jq -r --arg key "$key" '.urls[$key] // empty' "$dl/signed")
+    [ -n "$url" ] || refuse "hostd $version: the cell signed no url for it"
+    retry get -o "$dl/hostd" "$url"
+  else
+    retry get -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:s3" -o "$dl/hostd" "${s3:-https://$bucket.s3.$region.amazonaws.com}/$key"
+  fi
   echo "$sha256  $dl/hostd" | sha256sum -c --quiet > /dev/null 2>&1 || refuse "hostd $version: sha256 is not $sha256"
   install -D -m 755 "$dl/hostd" "$hostd"
 fi
 ln -sfn "$version" "$opt/hostd"
 
 install -d -m 700 "$etc"
-(umask 077 && jq --arg srv "$srv" '{
+(umask 077 && jq --arg srv "$srv" '(if has("files") then {files} else {} end) + {
   hostId, cellUrl, bucket, image,
   golden: "\($srv)/golden", vms: "\($srv)/vms", jail: "\($srv)/jail",
   firecracker: "/usr/local/bin/firecracker", jailer: "/usr/local/bin/jailer", snapshotEditor: "/usr/local/bin/snapshot-editor"

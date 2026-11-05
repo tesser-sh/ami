@@ -17,8 +17,12 @@ const IMAGE = { id: "build-42", root: "a".repeat(64), kernel: "b".repeat(64) };
 let dir;
 let imds;
 let s3;
+let sts;
+let cell;
 let userData = "";
 let s3Hits = [];
+let stsHits = [];
+let cellHits = [];
 
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 
@@ -43,13 +47,34 @@ before(async () => {
     else if (req.url === `/hostd/${VERSION}/${"f".repeat(64)}`) res.writeHead(200).end("#!/bin/sh\necho evil\n");
     else res.writeHead(404).end();
   });
+  sts = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      stsHits.push({ authorization: req.headers.authorization ?? "", token: req.headers["x-amz-security-token"] ?? "", body: new URLSearchParams(body) });
+      res.writeHead(200).end(JSON.stringify({ GetWebIdentityTokenResponse: { GetWebIdentityTokenResult: { WebIdentityToken: "host-identity-token" } } }));
+    });
+  });
+  cell = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      cellHits.push({ path: req.url, authorization: req.headers.authorization ?? "", body: JSON.parse(body) });
+      const keys = JSON.parse(body).keys;
+      res.writeHead(200).end(JSON.stringify({ urls: Object.fromEntries(keys.map((k) => [k, `http://127.0.0.1:${s3.port}/${k}`])) }));
+    });
+  });
   imds.port = await listen(imds);
   s3.port = await listen(s3);
+  sts.port = await listen(sts);
+  cell.port = await listen(cell);
 });
 
 after(() => {
   imds.close();
   s3.close();
+  sts.close();
+  cell.close();
 });
 
 async function boot() {
@@ -67,6 +92,8 @@ async function boot() {
   shim("mountpoint", "exit 0");
   const script = SCRIPT.replace(/^imds=.*$/m, `imds=http://127.0.0.1:${imds.port}`)
     .replace(/^s3=.*$/m, `s3=http://127.0.0.1:${s3.port}`)
+    .replace(/^sts=.*$/m, `sts=http://127.0.0.1:${sts.port}/`)
+    .replace(/^cell=.*$/m, `cell=http://127.0.0.1:${cell.port}`)
     .replace(/^etc=.*$/m, `etc=${root}/etc/tesser`)
     .replace(/^opt=.*$/m, `opt=${root}/opt/tesser`)
     .replace(/^srv=.*$/m, `srv=${root}/srv`)
@@ -121,6 +148,26 @@ test("the hostd the cell named is fetched with the host's role, installed, confi
   assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block tesser-hostd\n");
 });
 
+test("when the cell signs files, hostd comes from the url it signed for the host's identity token", async () => {
+  userData = config({ files: "cell" });
+  s3Hits = [];
+  stsHits = [];
+  cellHits = [];
+  const run = await boot();
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(readFileSync(join(run.root, `opt/tesser/${VERSION}`), "utf8"), HOSTD);
+  assert.equal(stsHits.length, 1);
+  assert.match(stsHits[0].authorization, /^AWS4-HMAC-SHA256 Credential=AKIATEST\/\d{8}\/us-west-2\/sts\/aws4_request/);
+  assert.equal(stsHits[0].token, "session-token");
+  assert.equal(stsHits[0].body.get("Action"), "GetWebIdentityToken");
+  assert.equal(stsHits[0].body.get("Audience.member.1"), "https://api.tesser.sh");
+  assert.deepEqual(cellHits, [{ path: "/v1/fleet/files", authorization: "Bearer host-identity-token", body: { keys: [`hostd/${VERSION}/${SHA}`] } }]);
+  assert.deepEqual(s3Hits, [{ path: `/hostd/${VERSION}/${SHA}`, authorization: "", token: "" }]);
+  const cfg = JSON.parse(readFileSync(join(run.root, "etc/tesser/hostd.json"), "utf8"));
+  assert.equal(cfg.files, "cell");
+  assert.equal(cfg.bucket, "tesser-fleet-prod-131798513069");
+});
+
 test("a hostd whose sha256 is not the one the cell named is never installed", async () => {
   userData = config({ hostd: { version: VERSION, sha256: "f".repeat(64) } });
   const run = await boot();
@@ -144,6 +191,8 @@ test("user-data that is not the expected JSON refuses to boot before anything is
     config({ hostd: { version: VERSION, sha256: SHA, extra: 1 } }),
     config({ image: { ...IMAGE, id: "../x" } }),
     config({ image: { id: IMAGE.id, root: IMAGE.root } }),
+    config({ files: "s3" }),
+    config({ files: true }),
   ];
   for (const data of bad) {
     userData = data;
