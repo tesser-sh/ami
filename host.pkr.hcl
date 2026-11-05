@@ -26,7 +26,7 @@ locals {
 # instead of a dev toolchain. Built on an ordinary instance; it boots on metal.
 source "amazon-ebs" "host" {
   region      = "us-west-2"
-  ami_regions = ["us-west-2"]
+  ami_regions = ["us-west-2", "us-east-1"]
 
   source_ami_filter {
     filters = {

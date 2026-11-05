@@ -1,37 +1,55 @@
 #!/bin/bash
 # Makes a launch of the host image a fleet host, on every boot. The user data
 # is JSON, never a script: the host's id, cell and bucket, and the hostd
-# build and guest image it runs; hostd proves which instance it is with the
-# instance role's web identity token. hostd comes from the bucket and runs
-# only if its sha256 is the one the cell named; hostd checks the image's.
+# build and guest image it runs. A hosted host also names its region's images
+# bucket, which its instance role reads. Otherwise the host proves which
+# instance it is with the role's web identity token, and the cell answers with
+# short-lived credentials that read only the files it asked for. hostd runs only
+# if its sha256 is the one the cell named; hostd checks the image's.
 set -euo pipefail
 imds=http://169.254.169.254
 s3=
+sts=
+cell=
 etc=/etc/tesser
 opt=/opt/tesser
 srv=/srv
 tries=10
 pause=3
-retry() { for _ in $(seq "$tries"); do "$@" && return 0; sleep "$pause"; done; return 1; }
 get() { curl -fsS --connect-timeout 5 --max-time 120 "$@"; }
+fetch() { local out=$1; shift; for _ in $(seq "$tries"); do get -o "$out" "$@" && return 0; sleep "$pause"; done; return 1; }
+value() { fetch "$dl/value" "$@" && cat "$dl/value"; }
 refuse() { echo "tesser-host-boot: refusing $1" >&2; exit 1; }
 dl=$(mktemp -d)
 trap 'rm -rf "$dl"' EXIT
-token=$(retry get -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' "$imds/latest/api/token")
-metadata() { retry get -H "X-aws-ec2-metadata-token: $token" "$imds/latest/$1"; }
+token=$(value -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' "$imds/latest/api/token")
+metadata() { value -H "X-aws-ec2-metadata-token: $token" "$imds/latest/$1"; }
+cellcreds() {
+  local code
+  for _ in $(seq "$tries"); do
+    code=$(curl -sS --connect-timeout 5 --max-time 120 -o "$dl/files" -w '%{http_code}' -K "$dl/bearer" -H 'content-type: application/json' --data-binary "@$dl/want" "${cell:-$cellUrl}/v1/fleet/creds") || code=000
+    case "$code" in 2??) return 0 ;; 4??) break ;; esac
+    sleep "$pause"
+  done
+  echo "tesser-host-boot: the cell answered $code: $(head -c 500 "$dl/files" 2> /dev/null)" >&2
+  return 1
+}
 metadata user-data > "$dl/user-data"
 jq -e '
   def is(re): type == "string" and test(re);
   type == "object"
-  and (keys == ["bucket", "cellUrl", "hostId", "hostd", "image"])
+  and (keys == ["bucket", "cellUrl", "hostId", "hostd", "image"] or keys == ["bucket", "cellUrl", "hostId", "hostd", "image", "imagesBucket"])
   and (.hostId | is("^h-[0-9a-f]{12}$"))
   and (.cellUrl | is("^https://[a-z0-9.-]+(:[0-9]{1,5})?$"))
   and (.bucket | is("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"))
+  and ((has("imagesBucket") | not) or (.imagesBucket | is("^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")))
   and (.hostd | type == "object" and keys == ["sha256", "version"] and (.version | is("^hostd-[0-9a-f]{12}$")) and (.sha256 | is("^[0-9a-f]{64}$")))
   and (.image | type == "object" and keys == ["id", "kernel", "root"] and (.id | is("^[a-z0-9-]{1,64}$")) and (.root | is("^[0-9a-f]{64}$")) and (.kernel | is("^[0-9a-f]{64}$")))
 ' "$dl/user-data" > /dev/null 2>&1 || refuse "user-data"
 field() { jq -r "$1" "$dl/user-data"; }
 bucket=$(field .bucket)
+imagesBucket=$(field '.imagesBucket // empty')
+cellUrl=$(field .cellUrl)
 version=$(field .hostd.version)
 sha256=$(field .hostd.sha256)
 region=$(metadata meta-data/placement/region)
@@ -60,8 +78,28 @@ if [ ! -x "$hostd" ]; then
   role=$(metadata meta-data/iam/security-credentials/ | head -1)
   metadata "meta-data/iam/security-credentials/$role" > "$dl/creds"
   (umask 077 && jq -r '"user = \"\(.AccessKeyId):\(.SecretAccessKey)\"\nheader = \"x-amz-security-token: \(.Token)\""' "$dl/creds" > "$dl/curlrc")
-  url=${s3:-https://$bucket.s3.$region.amazonaws.com}/hostd/$version/$sha256
-  retry get -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:s3" -o "$dl/hostd" "$url"
+  key=hostd/$version/$sha256
+  if [ -n "$imagesBucket" ]; then
+    fetch "$dl/hostd" -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:s3" "${s3:-https://$imagesBucket.s3.$region.amazonaws.com}/$key"
+  else
+    fetch "$dl/sts" -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:sts" -H 'accept: application/json' \
+      --data-urlencode Action=GetWebIdentityToken --data-urlencode Version=2011-06-15 --data-urlencode "Audience.member.1=$cellUrl" \
+      --data-urlencode SigningAlgorithm=RS256 --data-urlencode DurationSeconds=300 "${sts:-https://sts.$region.amazonaws.com/}"
+    jq -r '.GetWebIdentityTokenResponse.GetWebIdentityTokenResult.WebIdentityToken // empty' "$dl/sts" > "$dl/token"
+    [ -s "$dl/token" ] || refuse "to boot without an identity token"
+    (umask 077 && printf 'header = "authorization: Bearer %s"\n' "$(cat "$dl/token")" > "$dl/bearer")
+    jq -nc --arg key "$key" '{keys: [$key]}' > "$dl/want"
+    (umask 077 && cellcreds) || refuse "hostd $version: the cell gave no credentials for it"
+    jq -e '
+      def is(re): type == "string" and test(re);
+      (.accessKeyId | is("^[A-Z0-9]{16,128}$")) and (.secretAccessKey | is("^[A-Za-z0-9/+=]+$")) and (.sessionToken | is("^[A-Za-z0-9/+=]+$"))
+      and (.bucket | is("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and (.region | is("^[a-z]{2}(-[a-z]+)+-[0-9]$"))
+    ' "$dl/files" > /dev/null 2>&1 || refuse "hostd $version: the cell sent no credentials for it"
+    (umask 077 && jq -r '"user = \"\(.accessKeyId):\(.secretAccessKey)\"\nheader = \"x-amz-security-token: \(.sessionToken)\""' "$dl/files" > "$dl/filesrc")
+    files_bucket=$(jq -r .bucket "$dl/files")
+    files_region=$(jq -r .region "$dl/files")
+    fetch "$dl/hostd" -K "$dl/filesrc" --aws-sigv4 "aws:amz:$files_region:s3" "${s3:-https://$files_bucket.s3.$files_region.amazonaws.com}/$key"
+  fi
   echo "$sha256  $dl/hostd" | sha256sum -c --quiet > /dev/null 2>&1 || refuse "hostd $version: sha256 is not $sha256"
   install -D -m 755 "$dl/hostd" "$hostd"
 fi
@@ -72,6 +110,6 @@ install -d -m 700 "$etc"
   hostId, cellUrl, bucket, image,
   golden: "\($srv)/golden", vms: "\($srv)/vms", jail: "\($srv)/jail",
   firecracker: "/usr/local/bin/firecracker", jailer: "/usr/local/bin/jailer", snapshotEditor: "/usr/local/bin/snapshot-editor"
-}' "$dl/user-data" > "$etc/hostd.json")
+} + (if has("imagesBucket") then {imagesBucket} else {} end)' "$dl/user-data" > "$etc/hostd.json")
 systemctl enable --now --no-block tesser-hostd
 echo "tesser-host-boot: $(field .hostId) runs $version"
