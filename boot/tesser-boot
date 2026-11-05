@@ -50,9 +50,8 @@ console.log(c.cellUrl);
 JS
 )
 fetch_boxd() {
-  get -L "$cell_url/v1/boxd/bundle" -o "$dl/boxd.js" &&
-    get -L "$cell_url/v1/boxd/statement" -o "$dl/statement" &&
-    get -L "$cell_url/v1/boxd/statement.sig" -o "$dl/statement.sig" &&
+  rm -f "$dl/boxd.js" "$dl/statement" "$dl/statement.sig"
+  get -L --parallel --fail-early "$cell_url/v1/boxd/bundle" -o "$dl/boxd.js" "$cell_url/v1/boxd/statement" -o "$dl/statement" "$cell_url/v1/boxd/statement.sig" -o "$dl/statement.sig" &&
     "$verifier" "$dl/boxd.js" "$dl/statement" "$dl/statement.sig"
 }
 retry fetch_boxd
