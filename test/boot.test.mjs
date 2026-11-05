@@ -27,6 +27,7 @@ let cell;
 let userData = "";
 let signature = SIGNATURE;
 let cellHits = 0;
+let failing = null;
 
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 
@@ -64,7 +65,8 @@ before(async () => {
     cellHits += 1;
     const path = new URL(req.url, "https://cell").pathname;
     const body = { "/v1/boxd/bundle": BUNDLE, "/v1/boxd/statement": STATEMENT, "/v1/boxd/statement.sig": signature }[path];
-    if (body === undefined) res.writeHead(404).end();
+    if (path === failing) res.writeHead(500).end();
+    else if (body === undefined) res.writeHead(404).end();
     else res.writeHead(200).end(body);
   });
   imds.port = await listen(imds);
@@ -162,6 +164,20 @@ test("a bundle whose signature does not verify is never installed", async () => 
   assert.equal(existsSync(join(run.root, "opt/tesser/boxd.js")), false);
   assert.equal(existsSync(join(run.root, "etc/tesser/boxd.json")), false);
   assert.equal(existsSync(run.systemctl), false);
+});
+
+test("a fetch that fails fails the boot before the verifier sees anything, whichever of the three it is", async () => {
+  userData = config();
+  signature = SIGNATURE;
+  for (const path of ["/v1/boxd/bundle", "/v1/boxd/statement", "/v1/boxd/statement.sig"]) {
+    failing = path;
+    const run = await boot();
+    assert.notEqual(run.code, 0, path);
+    assert.doesNotMatch(run.stderr, /tesser-verify-boxd/, path);
+    assert.equal(existsSync(join(run.root, "opt/tesser/boxd.js")), false, path);
+    assert.equal(existsSync(run.systemctl), false, path);
+  }
+  failing = null;
 });
 
 test("user-data that is not the expected JSON refuses to boot before anything is fetched from the cell", async () => {
