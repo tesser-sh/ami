@@ -213,12 +213,11 @@ jobs:
 
       # Guest images are never rotated: a sleeping box is a delta from the
       # image it was cut from, for as long as it sleeps.
-      - name: Rotate, keep the newest 2 images of each kind per region
+      - name: Rotate, keep the newest 2 images of each kind per region and the last 3 releases'
         run: |
           set -euo pipefail
           # tesser runs an older release until ami-bump and a deploy move it, and
           # builds can publish minutes apart, so the last 3 releases' AMIs stay.
-          git fetch -q --deepen=50 origin main
           pinned=$(git log -n 3 --format=%H HEAD -- amis.json)
           for c in $pinned; do git show "$c:amis.json"; done | jq -s 'map(to_entries) | add | group_by(.key) | map({key: .[0].key, value: map(.value)}) | from_entries' > prev-box.json
           for c in $pinned; do git show "$c:fleet.json" 2>/dev/null | jq '.hostAmis // {}' || echo '{}'; done | jq -s 'map(to_entries) | add // [] | group_by(.key) | map({key: .[0].key, value: map(.value)}) | from_entries' > prev-host.json
