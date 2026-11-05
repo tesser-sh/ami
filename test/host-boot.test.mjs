@@ -24,6 +24,7 @@ let s3Hits = [];
 let stsHits = [];
 let cellHits = [];
 let cellAnswer = null;
+let cellReplies = [];
 
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 
@@ -61,6 +62,8 @@ before(async () => {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       cellHits.push({ path: req.url, authorization: req.headers.authorization ?? "", body: JSON.parse(body) });
+      const reply = cellReplies.shift();
+      if (reply !== undefined) return reply(res);
       res.writeHead(200).end(JSON.stringify(cellAnswer ?? { accessKeyId: "ASIAHOSTDREADER0", secretAccessKey: "temp/secret+key=", sessionToken: "temp+session/token=", expiration: "2099-01-01T00:00:00Z", bucket: "tesser-fleet-images-prod-131798513069-us-west-2", region: "us-west-2" }));
     });
   });
@@ -77,7 +80,7 @@ after(() => {
   cell.close();
 });
 
-async function boot() {
+async function boot({ tries = 1 } = {}) {
   const root = mkdtempSync(join(dir, "root-"));
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -97,7 +100,7 @@ async function boot() {
     .replace(/^etc=.*$/m, `etc=${root}/etc/tesser`)
     .replace(/^opt=.*$/m, `opt=${root}/opt/tesser`)
     .replace(/^srv=.*$/m, `srv=${root}/srv`)
-    .replace(/^tries=.*$/m, "tries=1")
+    .replace(/^tries=.*$/m, `tries=${tries}`)
     .replace(/^pause=.*$/m, "pause=0");
   const file = join(root, "tesser-host-boot");
   writeFileSync(file, script);
@@ -171,6 +174,45 @@ test("an answer from the cell that is not credentials for a bucket fetches nothi
     assert.equal(existsSync(join(run.root, "etc/tesser/hostd.json")), false);
   }
   cellAnswer = null;
+});
+
+test("a cell answer cut off mid-body is fetched again from scratch", async () => {
+  userData = config();
+  s3Hits = [];
+  cellHits = [];
+  cellAnswer = null;
+  cellReplies = [(res) => {
+    res.writeHead(200, { "content-length": "400" });
+    res.write('{"accessKeyId":"ASIAHOSTDREADER0","secretAccessKey":"temp/sec', () => res.destroy());
+  }];
+  const run = await boot({ tries: 3 });
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(cellHits.length, 2);
+  assert.equal(s3Hits.length, 1);
+});
+
+test("a cell that refuses the host is asked once, and its error is printed", async () => {
+  userData = config();
+  s3Hits = [];
+  cellHits = [];
+  cellReplies = [(res) => res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "instance i-0abc is not a fleet host" }))];
+  const run = await boot({ tries: 3 });
+  assert.notEqual(run.code, 0);
+  assert.equal(cellHits.length, 1);
+  assert.match(run.stderr, /the cell answered 401: \{"error":"instance i-0abc is not a fleet host"\}/);
+  assert.match(run.stderr, /tesser-host-boot: refusing hostd .* the cell gave no credentials/);
+  assert.equal(s3Hits.length, 0);
+  assert.equal(existsSync(join(run.root, "etc/tesser/hostd.json")), false);
+});
+
+test("a cell that keeps failing is retried, then its last error is printed", async () => {
+  userData = config();
+  cellHits = [];
+  cellReplies = [0, 1, 2].map(() => (res) => res.writeHead(503).end("busy"));
+  const run = await boot({ tries: 3 });
+  assert.notEqual(run.code, 0);
+  assert.equal(cellHits.length, 3);
+  assert.match(run.stderr, /the cell answered 503: busy/);
 });
 
 test("a hostd whose sha256 is not the one the cell named is never installed", async () => {

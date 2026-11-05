@@ -15,13 +15,24 @@ opt=/opt/tesser
 srv=/srv
 tries=10
 pause=3
-retry() { for _ in $(seq "$tries"); do "$@" && return 0; sleep "$pause"; done; return 1; }
 get() { curl -fsS --connect-timeout 5 --max-time 120 "$@"; }
+fetch() { local out=$1; shift; for _ in $(seq "$tries"); do get -o "$out" "$@" && return 0; sleep "$pause"; done; return 1; }
+value() { fetch "$dl/value" "$@" && cat "$dl/value"; }
 refuse() { echo "tesser-host-boot: refusing $1" >&2; exit 1; }
 dl=$(mktemp -d)
 trap 'rm -rf "$dl"' EXIT
-token=$(retry get -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' "$imds/latest/api/token")
-metadata() { retry get -H "X-aws-ec2-metadata-token: $token" "$imds/latest/$1"; }
+token=$(value -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' "$imds/latest/api/token")
+metadata() { value -H "X-aws-ec2-metadata-token: $token" "$imds/latest/$1"; }
+cellcreds() {
+  local code
+  for _ in $(seq "$tries"); do
+    code=$(curl -sS --connect-timeout 5 --max-time 120 -o "$dl/files" -w '%{http_code}' -K "$dl/bearer" -H 'content-type: application/json' --data-binary "@$dl/want" "${cell:-$cellUrl}/v1/fleet/creds") || code=000
+    case "$code" in 2??) return 0 ;; 4??) break ;; esac
+    sleep "$pause"
+  done
+  echo "tesser-host-boot: the cell answered $code: $(head -c 500 "$dl/files" 2> /dev/null)" >&2
+  return 1
+}
 metadata user-data > "$dl/user-data"
 jq -e '
   def is(re): type == "string" and test(re);
@@ -65,14 +76,14 @@ if [ ! -x "$hostd" ]; then
   metadata "meta-data/iam/security-credentials/$role" > "$dl/creds"
   (umask 077 && jq -r '"user = \"\(.AccessKeyId):\(.SecretAccessKey)\"\nheader = \"x-amz-security-token: \(.Token)\""' "$dl/creds" > "$dl/curlrc")
   key=hostd/$version/$sha256
-  retry get -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:sts" -H 'accept: application/json' \
+  fetch "$dl/sts" -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:sts" -H 'accept: application/json' \
     --data-urlencode Action=GetWebIdentityToken --data-urlencode Version=2011-06-15 --data-urlencode "Audience.member.1=$cellUrl" \
-    --data-urlencode SigningAlgorithm=RS256 --data-urlencode DurationSeconds=300 "${sts:-https://sts.$region.amazonaws.com/}" > "$dl/sts"
+    --data-urlencode SigningAlgorithm=RS256 --data-urlencode DurationSeconds=300 "${sts:-https://sts.$region.amazonaws.com/}"
   jq -r '.GetWebIdentityTokenResponse.GetWebIdentityTokenResult.WebIdentityToken // empty' "$dl/sts" > "$dl/token"
   [ -s "$dl/token" ] || refuse "to boot without an identity token"
   (umask 077 && printf 'header = "authorization: Bearer %s"\n' "$(cat "$dl/token")" > "$dl/bearer")
   jq -nc --arg key "$key" '{keys: [$key]}' > "$dl/want"
-  (umask 077 && retry get -K "$dl/bearer" -H 'content-type: application/json' --data-binary "@$dl/want" "${cell:-$cellUrl}/v1/fleet/creds" > "$dl/files")
+  (umask 077 && cellcreds) || refuse "hostd $version: the cell gave no credentials for it"
   jq -e '
     def is(re): type == "string" and test(re);
     (.accessKeyId | is("^[A-Z0-9]{16,128}$")) and (.secretAccessKey | is("^[A-Za-z0-9/+=]+$")) and (.sessionToken | is("^[A-Za-z0-9/+=]+$"))
@@ -81,7 +92,7 @@ if [ ! -x "$hostd" ]; then
   (umask 077 && jq -r '"user = \"\(.accessKeyId):\(.secretAccessKey)\"\nheader = \"x-amz-security-token: \(.sessionToken)\""' "$dl/files" > "$dl/filesrc")
   files_bucket=$(jq -r .bucket "$dl/files")
   files_region=$(jq -r .region "$dl/files")
-  retry get -K "$dl/filesrc" --aws-sigv4 "aws:amz:$files_region:s3" -o "$dl/hostd" "${s3:-https://$files_bucket.s3.$files_region.amazonaws.com}/$key"
+  fetch "$dl/hostd" -K "$dl/filesrc" --aws-sigv4 "aws:amz:$files_region:s3" "${s3:-https://$files_bucket.s3.$files_region.amazonaws.com}/$key"
   echo "$sha256  $dl/hostd" | sha256sum -c --quiet > /dev/null 2>&1 || refuse "hostd $version: sha256 is not $sha256"
   install -D -m 755 "$dl/hostd" "$hostd"
 fi
