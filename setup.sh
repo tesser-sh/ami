@@ -40,6 +40,9 @@ if [[ $target == ec2 ]]; then
   [[ -z $old ]] || apt-get purge -y $old
 fi
 apt-get autoremove --purge -y
+rm -f /etc/apt/apt.conf.d/99update-notifier /etc/apt/apt.conf.d/20packagekit
+echo 'man-db man-db/auto-update boolean false' | debconf-set-selections
+rm -f /var/lib/man-db/auto-update
 
 # node 22 and 24 through fnm, 24 the default, on every PATH.
 export FNM_DIR=/usr/local/fnm
@@ -124,8 +127,4 @@ else
     snapd.service snapd.socket snapd.seeded.service lxd-installer.socket
   install -d /etc/tesser
   touch /etc/tesser/snapshots
-  # A box from a snapshot reinstalls its manifest's apt packages on every
-  # start. apt's hooks for the motd's update count and PackageKit, and
-  # man-db's index rebuild, add 12-14 s to that and nothing reads them.
-  rm -f /etc/apt/apt.conf.d/99update-notifier /etc/apt/apt.conf.d/20packagekit /var/lib/man-db/auto-update
 fi
