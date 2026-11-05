@@ -162,6 +162,39 @@ test("the hostd the cell named is fetched with credentials the cell gave for the
   assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block tesser-hostd\n");
 });
 
+test("a hosted host fetches hostd from its region's images bucket with its instance role, and never asks STS or the cell", async () => {
+  const imagesBucket = "tesser-fleet-images-prod-131798513069-us-west-2";
+  userData = config({ imagesBucket });
+  s3Hits = [];
+  stsHits = [];
+  cellHits = [];
+  const run = await boot();
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(readFileSync(join(run.root, `opt/tesser/${VERSION}`), "utf8"), HOSTD);
+  assert.equal(stsHits.length, 0);
+  assert.equal(cellHits.length, 0);
+  assert.equal(s3Hits.length, 1);
+  assert.equal(s3Hits[0].path, `/hostd/${VERSION}/${SHA}`);
+  assert.match(s3Hits[0].authorization, /^AWS4-HMAC-SHA256 Credential=AKIATEST\/\d{8}\/us-west-2\/s3\/aws4_request/);
+  assert.equal(s3Hits[0].token, "session-token");
+  assert.doesNotMatch(run.stderr, /secret|session-token/);
+  const cfg = JSON.parse(readFileSync(join(run.root, "etc/tesser/hostd.json"), "utf8"));
+  assert.equal(cfg.imagesBucket, imagesBucket);
+  assert.equal(cfg.bucket, "tesser-fleet-prod-131798513069");
+  assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block tesser-hostd\n");
+});
+
+test("a hosted hostd whose sha256 is not the one the cell named is never installed", async () => {
+  userData = config({ imagesBucket: "tesser-fleet-images-prod-131798513069-us-west-2", hostd: { version: VERSION, sha256: "f".repeat(64) } });
+  cellHits = [];
+  const run = await boot();
+  assert.notEqual(run.code, 0);
+  assert.match(run.stderr, /tesser-host-boot: refusing hostd/);
+  assert.equal(cellHits.length, 0);
+  assert.equal(existsSync(join(run.root, `opt/tesser/${VERSION}`)), false);
+  assert.equal(existsSync(join(run.root, "etc/tesser/hostd.json")), false);
+});
+
 test("an answer from the cell that is not credentials for a bucket fetches nothing", async () => {
   for (const answer of [{ urls: {} }, { accessKeyId: "ASIAHOSTDREADER0", secretAccessKey: "s", sessionToken: "t", bucket: "x.s3.evil.com/", region: "us-west-2" }, { accessKeyId: "ASIAHOSTDREADER0", secretAccessKey: "s", sessionToken: "t", bucket: "tesser-fleet-images", region: "us-west-2/../x" }]) {
     userData = config();
@@ -239,6 +272,12 @@ test("user-data that is not the expected JSON refuses to boot before anything is
     config({ image: { ...IMAGE, id: "../x" } }),
     config({ image: { id: IMAGE.id, root: IMAGE.root } }),
     config({ files: "cell" }),
+    config({ imagesBucket: "tesser-fleet-images-prod-131798513069-us-west-2", extra: "x" }),
+    config({ imagesBucket: "x.s3.evil.com" }),
+    config({ imagesBucket: "Bad_Bucket" }),
+    config({ imagesBucket: "" }),
+    config({ imagesBucket: 1 }),
+    config({ imagesBucket: null }),
   ];
   for (const data of bad) {
     userData = data;

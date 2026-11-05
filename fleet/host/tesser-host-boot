@@ -1,10 +1,11 @@
 #!/bin/bash
 # Makes a launch of the host image a fleet host, on every boot. The user data
 # is JSON, never a script: the host's id, cell and bucket, and the hostd
-# build and guest image it runs. The host proves which instance it is with the
-# instance role's web identity token, and the cell answers with short-lived
-# credentials that read only the files it asked for. hostd runs only if its
-# sha256 is the one the cell named; hostd checks the image's.
+# build and guest image it runs. A hosted host also names its region's images
+# bucket, which its instance role reads. Otherwise the host proves which
+# instance it is with the role's web identity token, and the cell answers with
+# short-lived credentials that read only the files it asked for. hostd runs only
+# if its sha256 is the one the cell named; hostd checks the image's.
 set -euo pipefail
 imds=http://169.254.169.254
 s3=
@@ -37,15 +38,17 @@ metadata user-data > "$dl/user-data"
 jq -e '
   def is(re): type == "string" and test(re);
   type == "object"
-  and (keys == ["bucket", "cellUrl", "hostId", "hostd", "image"])
+  and (keys == ["bucket", "cellUrl", "hostId", "hostd", "image"] or keys == ["bucket", "cellUrl", "hostId", "hostd", "image", "imagesBucket"])
   and (.hostId | is("^h-[0-9a-f]{12}$"))
   and (.cellUrl | is("^https://[a-z0-9.-]+(:[0-9]{1,5})?$"))
   and (.bucket | is("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"))
+  and ((has("imagesBucket") | not) or (.imagesBucket | is("^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")))
   and (.hostd | type == "object" and keys == ["sha256", "version"] and (.version | is("^hostd-[0-9a-f]{12}$")) and (.sha256 | is("^[0-9a-f]{64}$")))
   and (.image | type == "object" and keys == ["id", "kernel", "root"] and (.id | is("^[a-z0-9-]{1,64}$")) and (.root | is("^[0-9a-f]{64}$")) and (.kernel | is("^[0-9a-f]{64}$")))
 ' "$dl/user-data" > /dev/null 2>&1 || refuse "user-data"
 field() { jq -r "$1" "$dl/user-data"; }
 bucket=$(field .bucket)
+imagesBucket=$(field '.imagesBucket // empty')
 cellUrl=$(field .cellUrl)
 version=$(field .hostd.version)
 sha256=$(field .hostd.sha256)
@@ -76,23 +79,27 @@ if [ ! -x "$hostd" ]; then
   metadata "meta-data/iam/security-credentials/$role" > "$dl/creds"
   (umask 077 && jq -r '"user = \"\(.AccessKeyId):\(.SecretAccessKey)\"\nheader = \"x-amz-security-token: \(.Token)\""' "$dl/creds" > "$dl/curlrc")
   key=hostd/$version/$sha256
-  fetch "$dl/sts" -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:sts" -H 'accept: application/json' \
-    --data-urlencode Action=GetWebIdentityToken --data-urlencode Version=2011-06-15 --data-urlencode "Audience.member.1=$cellUrl" \
-    --data-urlencode SigningAlgorithm=RS256 --data-urlencode DurationSeconds=300 "${sts:-https://sts.$region.amazonaws.com/}"
-  jq -r '.GetWebIdentityTokenResponse.GetWebIdentityTokenResult.WebIdentityToken // empty' "$dl/sts" > "$dl/token"
-  [ -s "$dl/token" ] || refuse "to boot without an identity token"
-  (umask 077 && printf 'header = "authorization: Bearer %s"\n' "$(cat "$dl/token")" > "$dl/bearer")
-  jq -nc --arg key "$key" '{keys: [$key]}' > "$dl/want"
-  (umask 077 && cellcreds) || refuse "hostd $version: the cell gave no credentials for it"
-  jq -e '
-    def is(re): type == "string" and test(re);
-    (.accessKeyId | is("^[A-Z0-9]{16,128}$")) and (.secretAccessKey | is("^[A-Za-z0-9/+=]+$")) and (.sessionToken | is("^[A-Za-z0-9/+=]+$"))
-    and (.bucket | is("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and (.region | is("^[a-z]{2}(-[a-z]+)+-[0-9]$"))
-  ' "$dl/files" > /dev/null 2>&1 || refuse "hostd $version: the cell sent no credentials for it"
-  (umask 077 && jq -r '"user = \"\(.accessKeyId):\(.secretAccessKey)\"\nheader = \"x-amz-security-token: \(.sessionToken)\""' "$dl/files" > "$dl/filesrc")
-  files_bucket=$(jq -r .bucket "$dl/files")
-  files_region=$(jq -r .region "$dl/files")
-  fetch "$dl/hostd" -K "$dl/filesrc" --aws-sigv4 "aws:amz:$files_region:s3" "${s3:-https://$files_bucket.s3.$files_region.amazonaws.com}/$key"
+  if [ -n "$imagesBucket" ]; then
+    fetch "$dl/hostd" -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:s3" "${s3:-https://$imagesBucket.s3.$region.amazonaws.com}/$key"
+  else
+    fetch "$dl/sts" -K "$dl/curlrc" --aws-sigv4 "aws:amz:$region:sts" -H 'accept: application/json' \
+      --data-urlencode Action=GetWebIdentityToken --data-urlencode Version=2011-06-15 --data-urlencode "Audience.member.1=$cellUrl" \
+      --data-urlencode SigningAlgorithm=RS256 --data-urlencode DurationSeconds=300 "${sts:-https://sts.$region.amazonaws.com/}"
+    jq -r '.GetWebIdentityTokenResponse.GetWebIdentityTokenResult.WebIdentityToken // empty' "$dl/sts" > "$dl/token"
+    [ -s "$dl/token" ] || refuse "to boot without an identity token"
+    (umask 077 && printf 'header = "authorization: Bearer %s"\n' "$(cat "$dl/token")" > "$dl/bearer")
+    jq -nc --arg key "$key" '{keys: [$key]}' > "$dl/want"
+    (umask 077 && cellcreds) || refuse "hostd $version: the cell gave no credentials for it"
+    jq -e '
+      def is(re): type == "string" and test(re);
+      (.accessKeyId | is("^[A-Z0-9]{16,128}$")) and (.secretAccessKey | is("^[A-Za-z0-9/+=]+$")) and (.sessionToken | is("^[A-Za-z0-9/+=]+$"))
+      and (.bucket | is("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and (.region | is("^[a-z]{2}(-[a-z]+)+-[0-9]$"))
+    ' "$dl/files" > /dev/null 2>&1 || refuse "hostd $version: the cell sent no credentials for it"
+    (umask 077 && jq -r '"user = \"\(.accessKeyId):\(.secretAccessKey)\"\nheader = \"x-amz-security-token: \(.sessionToken)\""' "$dl/files" > "$dl/filesrc")
+    files_bucket=$(jq -r .bucket "$dl/files")
+    files_region=$(jq -r .region "$dl/files")
+    fetch "$dl/hostd" -K "$dl/filesrc" --aws-sigv4 "aws:amz:$files_region:s3" "${s3:-https://$files_bucket.s3.$files_region.amazonaws.com}/$key"
+  fi
   echo "$sha256  $dl/hostd" | sha256sum -c --quiet > /dev/null 2>&1 || refuse "hostd $version: sha256 is not $sha256"
   install -D -m 755 "$dl/hostd" "$hostd"
 fi
@@ -103,6 +110,6 @@ install -d -m 700 "$etc"
   hostId, cellUrl, bucket, image,
   golden: "\($srv)/golden", vms: "\($srv)/vms", jail: "\($srv)/jail",
   firecracker: "/usr/local/bin/firecracker", jailer: "/usr/local/bin/jailer", snapshotEditor: "/usr/local/bin/snapshot-editor"
-}' "$dl/user-data" > "$etc/hostd.json")
+} + (if has("imagesBucket") then {imagesBucket} else {} end)' "$dl/user-data" > "$etc/hostd.json")
 systemctl enable --now --no-block tesser-hostd
 echo "tesser-host-boot: $(field .hostId) runs $version"
