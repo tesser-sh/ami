@@ -4,6 +4,18 @@
 # ready: a template has settled. personalize: a box restored from a template
 # takes its own address, entropy, machine id, ssh host keys, and boots as a
 # box.
+# A box reads its template's memory from its host's page cache and its own
+# disk cold, so a template caches what a box runs right after personalize.
+warm() {
+  local node=/usr/local/fnm/aliases/default/bin/node b p
+  cat "$(readlink -f "$node")" > /dev/null
+  python3 -c 'import fcntl, os, json' 2>/dev/null
+  for b in "$node" curl sudo dmsetup mount umount findmnt blockdev dd cp install mkdir systemd-run systemctl python3 ssh-keygen ip git rsync nbd-client; do
+    p=$(command -v "$b") || continue
+    cat "$p" $(ldd "$p" 2>/dev/null | awk '$3 ~ /^\// { print $3 }') > /dev/null 2>&1
+  done
+  cat /usr/local/bin/tesser-verify-boxd > /dev/null
+}
 read -r cmd arg ip seed mid || exit 0
 case "$cmd" in
   resumed)
@@ -12,6 +24,7 @@ case "$cmd" in
     echo ok ;;
   ready)
     systemctl is-system-running --wait >/dev/null 2>&1 || true
+    warm > /dev/null 2>&1
     sync
     echo ok ;;
   personalize)
