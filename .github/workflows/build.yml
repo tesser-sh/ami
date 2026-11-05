@@ -174,9 +174,15 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch -q --deepen=50 origin main
+          last=$(git log -1 --format=%s origin/main -- amis.json | sed -n 's/^amis: built from \([0-9a-f]*\).*/\1/p')
+          if [ -n "$last" ] && git cat-file -e "$last^{commit}" 2>/dev/null && ! git merge-base --is-ancestor "$last" "$GITHUB_SHA"; then
+            echo "main already publishes images built from $last, newer than $GITHUB_SHA; dispatch a fresh build instead" >&2
+            exit 1
+          fi
           git add amis.json fleet.json
           git commit -m "amis: built from ${GITHUB_SHA} (run ${GITHUB_RUN_ID})"
-          git pull --rebase origin main
+          git pull --rebase -X theirs origin main
           git push origin HEAD:main
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -207,19 +213,20 @@ jobs:
 
       # Guest images are never rotated: a sleeping box is a delta from the
       # image it was cut from, for as long as it sleeps.
-      - name: Rotate, keep the newest 2 images of each kind per region
+      - name: Rotate, keep the newest 2 images of each kind per region and the last 3 releases'
         run: |
           set -euo pipefail
-          # The release before this one is what tesser runs until ami-bump moves
-          # it, so its AMIs stay even when a failed run left a newer one behind.
-          git show HEAD~1:amis.json > prev-box.json
-          { git show HEAD~1:fleet.json 2>/dev/null || echo '{}'; } | jq '.hostAmis // {}' > prev-host.json
+          # tesser runs an older release until ami-bump and a deploy move it, and
+          # builds can publish minutes apart, so the last 3 releases' AMIs stay.
+          pinned=$(git log -n 3 --format=%H HEAD -- amis.json)
+          for c in $pinned; do git show "$c:amis.json"; done | jq -s 'map(to_entries) | add | group_by(.key) | map({key: .[0].key, value: map(.value)}) | from_entries' > prev-box.json
+          for c in $pinned; do git show "$c:fleet.json" 2>/dev/null | jq '.hostAmis // {}' || echo '{}'; done | jq -s 'map(to_entries) | add // [] | group_by(.key) | map({key: .[0].key, value: map(.value)}) | from_entries' > prev-host.json
           rotate() {
             local region=$1 kind=$2
             aws ec2 describe-images --region "$region" --owners self \
               --filters "Name=name,Values=tesser-$kind-*" "Name=tag:tesser:ami,Values=$kind" > images.json
-            keep=$(jq -c --arg prev "$(jq -r --arg r "$region" '.[$r] // ""' "prev-$kind.json")" \
-              '.Images | sort_by(.CreationDate) | reverse | .[:2] | map(.ImageId) + [$prev]' images.json)
+            keep=$(jq -c --argjson prev "$(jq -c --arg r "$region" '.[$r] // []' "prev-$kind.json")" \
+              '.Images | sort_by(.CreationDate) | reverse | .[:2] | map(.ImageId) + $prev' images.json)
             jq -c --argjson keep "$keep" '.Images[] | select(.ImageId as $id | $keep | index($id) | not)
               | {id: .ImageId, snapshots: [.BlockDeviceMappings[].Ebs.SnapshotId // empty]}' images.json |
             while read -r image; do
