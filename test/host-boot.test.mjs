@@ -162,6 +162,20 @@ test("the hostd the cell named is fetched with credentials the cell gave for the
   assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block tesser-hostd\n");
 });
 
+test("an org's host asks its org's cell path for hostd credentials and hands hostd its org id", async () => {
+  userData = config({ orgId: "org_0123456789ab" });
+  s3Hits = [];
+  stsHits = [];
+  cellHits = [];
+  cellAnswer = null;
+  const run = await boot();
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(cellHits.map((h) => h.path), ["/v1/fleet/org_0123456789ab/creds"]);
+  const cfg = JSON.parse(readFileSync(join(run.root, "etc/tesser/hostd.json"), "utf8"));
+  assert.equal(cfg.orgId, "org_0123456789ab");
+  assert.equal(cfg.cellUrl, "https://api.tesser.sh");
+});
+
 test("a hosted host fetches hostd from its region's images bucket with its instance role, and never asks STS or the cell", async () => {
   const imagesBucket = "tesser-fleet-images-prod-131798513069-us-west-2";
   userData = config({ imagesBucket });
@@ -278,6 +292,11 @@ test("user-data that is not the expected JSON refuses to boot before anything is
     config({ imagesBucket: "" }),
     config({ imagesBucket: 1 }),
     config({ imagesBucket: null }),
+    config({ orgId: "org_0123456789ab/../x" }),
+    config({ orgId: "org_$(reboot)" }),
+    config({ orgId: "" }),
+    config({ orgId: null }),
+    config({ orgId: "org_0123456789ab", imagesBucket: "tesser-fleet-images-prod-131798513069-us-west-2" }),
   ];
   for (const data of bad) {
     userData = data;
