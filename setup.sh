@@ -108,7 +108,7 @@ if [[ $target == ec2 ]]; then
   bootsys=/sys/class/block/${bootpart#/dev/}
   start=$(cat "$bootsys/start") size=$(cat "$bootsys/size")
   umount /boot/efi /boot
-  e2fsck -fy "$bootpart"
+  e2fsck -fy "$bootpart" || (($? <= 1))
   resize2fs "$bootpart" 512M
   echo 'size=512MiB' | sfdisk -q --no-reread --no-tell-kernel -N "$(cat "$bootsys/partition")" "$disk"
   echo "start=$((start + 1048576)), size=$((size - 1048576)), name=tesser-era" | sfdisk -q --no-reread --no-tell-kernel --append "$disk"
@@ -127,7 +127,7 @@ if [[ $target == ec2 ]]; then
   mkdir -p "$initrd"/{bin,dev,proc,sys,run,newroot}
   install -m 755 "$files/boot/initrd/init" "$initrd/init"
   cp /usr/bin/busybox "$initrd/bin/busybox"
-  for applet in sh mount sleep cat seq head basename dirname readlink dd tr date mkdir blockdev switch_root; do
+  for applet in sh mount sleep cat seq head grep basename dirname readlink dd tr date mkdir blockdev switch_root poweroff; do
     ln -s busybox "$initrd/bin/$applet"
   done
   for tool in blkid sfdisk dmsetup debugfs resize2fs; do

@@ -15,7 +15,7 @@ cmdline=/proc/cmdline
 newroot=/newroot
 
 say() { echo "tesser-init: $*" > "$dev/kmsg" 2> /dev/null || echo "tesser-init: $*"; }
-fail() { say "$*"; sleep 30; exit 1; }
+fail() { say "$*, powering off"; sleep 5; poweroff -f; exit 1; }
 
 mount -t devtmpfs devtmpfs "$dev" 2> /dev/null
 mount -t proc proc /proc 2> /dev/null
@@ -28,20 +28,23 @@ for arg in $(cat "$cmdline"); do
 done
 [ -n "$partuuid" ] || fail "no tesser.root=PARTUUID= on the command line"
 
-root=
+root= meta=
 for _ in $(seq 300); do
-  root=$(blkid -t PARTUUID="$partuuid" -o device | head -1)
-  [ -n "$root" ] && break
+  roots=$(blkid -t PARTUUID="$partuuid" -o device)
+  [ "$(echo "$roots" | grep -c .)" -gt 1 ] && fail "more than one partition $partuuid:" $roots
+  root=$roots
+  if [ -n "$root" ]; then
+    part=${root#/dev/}
+    disk=/dev/$(basename "$(readlink -f "$sys/class/block/$part/..")")
+    for p in "$sys/class/block/$(basename "$disk")"/*/partition; do
+      p=$(basename "$(dirname "$p")")
+      [ "$(blkid -s PARTLABEL -o value "/dev/$p")" = tesser-era ] && meta=/dev/$p
+    done
+    [ -n "$meta" ] && break
+  fi
   sleep 0.1
 done
 [ -n "$root" ] || fail "no partition $partuuid"
-part=${root#/dev/}
-disk=/dev/$(basename "$(readlink -f "$sys/class/block/$part/..")")
-meta=
-for p in "$sys/class/block/$(basename "$disk")"/*/partition; do
-  p=$(basename "$(dirname "$p")")
-  [ "$(blkid -s PARTLABEL -o value "/dev/$p")" = tesser-era ] && meta=/dev/$p
-done
 [ -n "$meta" ] || fail "no tesser-era partition on $disk"
 
 offset=$(debugfs -R "bmap /swap-hibinit 0" "$root" 2> /dev/null)
@@ -63,7 +66,12 @@ fi
 fresh=0
 [ -z "$(dd if="$meta" bs=4096 count=1 2> /dev/null | tr -d '\0')" ] && fresh=1
 sectors=$(blockdev --getsz "$root")
-DM_DISABLE_UDEV=1 dmsetup create --noudevsync hera --table "0 $sectors era $meta $root 1024" || fail "dm-era over $root failed"
+if ! DM_DISABLE_UDEV=1 dmsetup create --noudevsync hera --table "0 $sectors era $meta $root 1024"; then
+  say "era metadata on $meta unreadable, making it again"
+  dd if=/dev/zero of="$meta" bs=4096 count=1 conv=fsync 2> /dev/null
+  fresh=1
+  DM_DISABLE_UDEV=1 dmsetup create --noudevsync hera --table "0 $sectors era $meta $root 1024" || fail "dm-era over $root failed"
+fi
 DM_DISABLE_UDEV=1 dmsetup create --noudevsync hroot --table "0 $sectors linear $dev/mapper/hera 0" || fail "hroot over hera failed"
 
 mkdir -p "$newroot"
