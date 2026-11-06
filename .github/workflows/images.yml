@@ -51,7 +51,9 @@ jobs:
           sudo apt-get build-dep -y -q --arch-only /tmp/k.dsc
           sudo install -d -o "$USER" /mnt/kernel
           start=$(date +%s)
-          KERNEL_WORK=/mnt/kernel bash kernel/build.sh "$PWD/kernel-out"
+          # Only the archive's toolchain: the runner's own rustc on PATH turns
+          # Ubuntu's CONFIG_RUST_IS_AVAILABLE off and its config check fails.
+          PATH=/usr/sbin:/usr/bin:/sbin:/bin KERNEL_WORK=/mnt/kernel bash kernel/build.sh "$PWD/kernel-out"
           echo "kernel build: $(( $(date +%s) - start )) s on $(nproc) vCPUs"
 
       - run: cat kernel-out/release kernel-out/build-id && sha256sum kernel-out/vmlinux kernel-out/bzImage kernel-out/debs/*

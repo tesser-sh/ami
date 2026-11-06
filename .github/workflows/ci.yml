@@ -25,4 +25,4 @@ jobs:
         with:
           version: 1.16.1
 
-      - run: for t in box host; do packer init "$t.pkr.hcl" && packer validate -var "source_sha=${GITHUB_SHA}" "$t.pkr.hcl"; done
+      - run: mkdir -p kernel-out && for t in box host; do packer init "$t.pkr.hcl" && packer validate -var "source_sha=${GITHUB_SHA}" "$t.pkr.hcl"; done
