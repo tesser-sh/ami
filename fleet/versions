@@ -1,8 +1,9 @@
-# Everything the fleet images fetch from outside Ubuntu, pinned by sha256.
+# Everything the images fetch from outside Ubuntu, pinned by sha256. kernel is
+# kernel.org's 6.18 LTS, kernel_config Firecracker's 6.18 guest config at its pin.
 firecracker=v1.17.0
 firecracker_sha256=06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
-kernel=6.1.158
-kernel_sha256=ad068bfdb604ec0f4f7de385c8e7ab944008aa78a4aeeca94f53206e6726bfda
-kernel_config_sha256=153ca1b40f3312bfb40b7587b471ea548a915f98f480f0d0892a1537957a2147
+kernel=6.18.60
+kernel_sha256=3c2f44ef6acc021a7ad444d9a2e6ec1ef488ff09368793d0004a6080f69d621e
+kernel_config_sha256=ba22401a0c7292a4c024ebcd10a562d4a1f1bfd2faed671406d3b159c0cf5215
 noble=20261017
 noble_sha256=04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94

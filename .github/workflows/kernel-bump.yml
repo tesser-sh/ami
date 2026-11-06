@@ -1,0 +1,91 @@
+name: kernel-bump
+
+# Watches kernel.org for the next 6.18 LTS release. Stable releases are how
+# CVE fixes reach a longterm kernel, so the day one lands this pins it on a
+# branch, builds and smoke-tests it the way images.yml always does, and opens
+# a pull request. Merging it is a person's call; build.yml then publishes it.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: kernel-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      branch: ${{ steps.pin.outputs.branch }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOSIGNER: B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1
+        run: |
+          set -euo pipefail
+          source fleet/versions
+          series=${kernel%.*}
+          latest=$(curl -fsSL https://www.kernel.org/releases.json | jq -r --arg s "$series." '[.releases[] | select(.version | startswith($s)) | .version][0] // empty')
+          [[ -n $latest ]] || { echo "kernel.org lists no $series release" >&2; exit 1; }
+          if [[ $latest == "$kernel" ]] || [[ $(printf '%s\n' "$kernel" "$latest" | sort -V | tail -1) == "$kernel" ]]; then
+            echo "pinned $kernel is the newest $series"
+            exit 0
+          fi
+          branch=kernel-bump/$latest
+          if [[ $(gh pr list --head "$branch" --state all --json number --jq length) != 0 ]]; then
+            echo "a pull request for $branch exists"
+            exit 0
+          fi
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          gpg -q --auto-key-locate clear,wkd --locate-keys autosigner@kernel.org
+          curl -fsSL -o sums.asc "https://cdn.kernel.org/pub/linux/kernel/v${latest%%.*}.x/sha256sums.asc"
+          gpg --status-fd 1 --verify sums.asc 2> /dev/null | grep -q "^\[GNUPG:\] VALIDSIG $AUTOSIGNER " || { echo "sha256sums.asc is not signed by kernel.org's autosigner" >&2; exit 1; }
+          sha=$(gpg -q --decrypt sums.asc 2> /dev/null | awk -v f="linux-$latest.tar.xz" '$2 == f { print $1 }')
+          rm sums.asc
+          [[ $sha =~ ^[0-9a-f]{64}$ ]] || { echo "no sha256 for linux-$latest.tar.xz" >&2; exit 1; }
+          curl -fsSL -o linux.tar.xz "https://cdn.kernel.org/pub/linux/kernel/v${latest%%.*}.x/linux-$latest.tar.xz"
+          echo "$sha  linux.tar.xz" | sha256sum -c --quiet
+          rm linux.tar.xz
+          sed -i -e "s/^kernel=.*/kernel=$latest/" -e "s/^kernel_sha256=.*/kernel_sha256=$sha/" fleet/versions
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -qam "chore(kernel): $latest"
+          git push -q -f origin "$branch"
+          printf 'branch=%s\nlatest=%s\nfrom=%s\nmajor=%s\n' "$branch" "$latest" "$kernel" "${latest%%.*}" >> "$GITHUB_OUTPUT"
+
+      - if: steps.pin.outputs.branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create --head "${{ steps.pin.outputs.branch }}" --title "chore(kernel): ${{ steps.pin.outputs.latest }}" --body \
+            "kernel.org released ${{ steps.pin.outputs.latest }} (pinned: ${{ steps.pin.outputs.from }}). Changelog: https://cdn.kernel.org/pub/linux/kernel/v${{ steps.pin.outputs.major }}.x/ChangeLog-${{ steps.pin.outputs.latest }}. A pull request opened by this workflow doesn't trigger images.yml, so this run builds and smoke-tests it and comments the result here."
+
+  images:
+    needs: bump
+    if: needs.bump.outputs.branch
+    uses: ./.github/workflows/images.yml
+    with:
+      ref: ${{ needs.bump.outputs.branch }}
+
+  report:
+    needs: [bump, images]
+    if: always() && needs.bump.outputs.branch
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.images.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr comment "${{ needs.bump.outputs.branch }}" -R "$GITHUB_REPOSITORY" --body "kernel build and Firecracker smoke: **$RESULT** ($RUN_URL)"

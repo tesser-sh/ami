@@ -1,0 +1,121 @@
+Subject: [PATCH] x86/PCI: add a root bus from userspace
+
+A box that booted as a Firecracker microVM knows one PCI root bus, bus 00.
+After it resumes on an EC2 instance, the ENA and the extra NVMe volumes
+sit behind the instance's other host bridges, which its ACPI namespace
+never had. Writing "<bus>-<end> [mem|io <start>-<end>]..." to
+/sys/bus/pci/add_root_bus scans that root bus with the type 1 config
+accessors and the given host bridge windows, as the instance's firmware
+reported them to the kernel that booted on it.
+
+--- a/arch/x86/pci/common.c
++++ b/arch/x86/pci/common.c
+@@ -478,6 +478,108 @@
+ 	pci_bus_add_devices(bus);
+ }
+ 
++#define PCI_ADDED_ROOT_WINDOWS 8
++
++struct pci_added_root {
++	struct pci_sysdata sd;
++	char name[24];
++	struct resource busn;
++	struct resource win[PCI_ADDED_ROOT_WINDOWS];
++};
++
++static ssize_t add_root_bus_store(const struct bus_type *bt, const char *buf,
++				  size_t count)
++{
++	struct pci_added_root *r;
++	struct resource *res, *conflict;
++	struct pci_bus *bus;
++	unsigned int busnr, busend, n = 0, i;
++	char *s, *p, *kw, *range;
++	u64 start, end;
++	LIST_HEAD(resources);
++	ssize_t ret = -EINVAL;
++
++	s = kstrndup(buf, count, GFP_KERNEL);
++	r = kzalloc(sizeof(*r), GFP_KERNEL);
++	if (!s || !r) {
++		ret = -ENOMEM;
++		goto out;
++	}
++	p = strim(s);
++	range = strsep(&p, " ");
++	if (sscanf(range, "%x-%x", &busnr, &busend) != 2 || busnr > busend ||
++	    busend > 0xff)
++		goto out;
++	if (pci_find_bus(0, busnr)) {
++		ret = -EEXIST;
++		goto out;
++	}
++	snprintf(r->name, sizeof(r->name), "PCI Bus 0000:%02x", busnr);
++	r->busn = DEFINE_RES_NAMED(busnr, busend - busnr + 1, r->name,
++				   IORESOURCE_BUS);
++	pci_add_resource(&resources, &r->busn);
++
++	while (p && *p) {
++		kw = strsep(&p, " ");
++		if (!*kw)
++			continue;
++		range = p ? strsep(&p, " ") : NULL;
++		if (!range || n == PCI_ADDED_ROOT_WINDOWS ||
++		    sscanf(range, "%llx-%llx", &start, &end) != 2 || start > end)
++			goto unwind;
++		res = &r->win[n];
++		if (!strcmp(kw, "mem"))
++			*res = DEFINE_RES_MEM_NAMED(start, end - start + 1, r->name);
++		else if (!strcmp(kw, "io"))
++			*res = DEFINE_RES_IO_NAMED(start, end - start + 1, r->name);
++		else
++			goto unwind;
++		res->flags |= IORESOURCE_WINDOW;
++		conflict = insert_resource_conflict(resource_type(res) == IORESOURCE_IO ?
++						    &ioport_resource : &iomem_resource, res);
++		if (conflict) {
++			pr_err("PCI: root bus %02x window %pR conflicts with %s %pR\n",
++			       busnr, res, conflict->name, conflict);
++			ret = -EBUSY;
++			goto unwind;
++		}
++		n++;
++		pci_add_resource(&resources, res);
++	}
++
++	r->sd.node = x86_pci_root_bus_node(busnr);
++	pr_info("PCI: adding root bus %02x-%02x\n", busnr, busend);
++	pci_lock_rescan_remove();
++	bus = pci_scan_root_bus(NULL, busnr, &pci_root_ops, &r->sd, &resources);
++	if (bus) {
++		pcibios_resource_survey_bus(bus);
++		pci_assign_unassigned_root_bus_resources(bus);
++		pci_bus_add_devices(bus);
++	}
++	pci_unlock_rescan_remove();
++	if (bus) {
++		r = NULL;
++		ret = count;
++		goto out;
++	}
++	ret = -ENODEV;
++unwind:
++	for (i = 0; i < n; i++)
++		release_resource(&r->win[i]);
++out:
++	pci_free_resource_list(&resources);
++	kfree(r);
++	kfree(s);
++	return ret;
++}
++static BUS_ATTR_WO(add_root_bus);
++
++static int __init pci_add_root_bus_init(void)
++{
++	return bus_create_file(&pci_bus_type, &bus_attr_add_root_bus);
++}
++late_initcall(pci_add_root_bus_init);
++
+ void __init pcibios_set_cache_line_size(void)
+ {
+ 	struct cpuinfo_x86 *c = &boot_cpu_data;

@@ -2,8 +2,9 @@
 # Builds the root disk every fleet microVM boots, the twin of the box AMI:
 # Ubuntu noble's cloud image, then setup.sh with TESSER_TARGET=firecracker run
 # inside a build microVM on the kernel the boxes boot, then stripped of what
-# belongs to the build. Then it boots the result as a template would and
-# fails unless the guest settles and answers its host on vsock.
+# belongs to the build. Then it runs smoke.sh on a copy and boots the result
+# as a template would, and fails unless smoke.sh passes and the guest settles
+# and answers its host on vsock.
 # Runs as root with /dev/kvm and firecracker on PATH.
 # usage: guest-image.sh <vmlinux> <out root.ext4>
 set -euo pipefail
@@ -97,6 +98,7 @@ EOF
 }
 boot "ip=10.199.0.2::10.199.0.1:255.255.255.252::eth0:off"
 timeout 3600 tail --pid="$fc" -f /dev/null || kill "$fc" 2>/dev/null || true
+wait "$fc" 2>/dev/null || true
 
 mount -o loop "$work/root.ext4" "$mnt"
 if [ ! -f "$mnt/root/build.ok" ]; then
@@ -111,10 +113,35 @@ rm -f "$mnt"/etc/ssh/ssh_host_* "$mnt/var/lib/dbus/machine-id" "$mnt/etc/tesser/
 rm -rf "$mnt"/var/log/journal/* "$mnt/home/ubuntu/.ssh"
 umount "$mnt"
 
-# Booted as a template, with no network: hostd's own first step on a host.
-cp --reflink=auto --sparse=always "$work/root.ext4" "$work/smoke.ext4"
+# smoke.sh on a copy, with the network, so the image never sees it.
 mv "$work/root.ext4" "$work/built.ext4"
-mv "$work/smoke.ext4" "$work/root.ext4"
+cp --reflink=auto --sparse=always "$work/built.ext4" "$work/root.ext4"
+mount -o loop "$work/root.ext4" "$mnt"
+install -m 755 "$repo/smoke.sh" "$mnt/root/smoke.sh"
+install -m 644 /dev/stdin "$mnt/etc/systemd/system/tesser-smoke.service" <<'EOF'
+[Unit]
+After=network-online.target systemd-resolved.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+Environment=TESSER_TARGET=firecracker
+ExecStart=/bin/bash -c '/root/smoke.sh > /root/smoke.log 2>&1 && touch /root/smoke.ok; sync; systemctl reboot -f'
+TimeoutStartSec=1800
+[Install]
+WantedBy=multi-user.target
+EOF
+chroot "$mnt" systemctl enable tesser-smoke.service
+umount "$mnt"
+boot "ip=10.199.0.2::10.199.0.1:255.255.255.252::eth0:off systemd.mask=tesser-boot.service"
+timeout 1800 tail --pid="$fc" -f /dev/null || kill "$fc" 2>/dev/null || true
+wait "$fc" 2>/dev/null || true
+mount -o loop "$work/root.ext4" "$mnt"
+cat "$mnt/root/smoke.log" || tail -60 "$work/console.log"
+[ -f "$mnt/root/smoke.ok" ] || { echo "guest-image: smoke.sh failed" >&2; exit 1; }
+umount "$mnt"
+
+# Booted as a template, with no network: hostd's own first step on a host.
+cp --reflink=auto --sparse=always "$work/built.ext4" "$work/root.ext4"
 boot "ip=10.255.255.254::10.128.0.1:255.128.0.0::eth0:off tesser.template"
 answer=
 for _ in $(seq 120); do
