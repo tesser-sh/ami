@@ -83,9 +83,8 @@ printf '%s\n' 'export PATH=$HOME/.local/share/mise/shims:$PATH' > /etc/profile.d
 
 usermod -aG docker ubuntu
 systemctl enable docker
-# Docker Hub pulls go through Google's pull-through cache first. Every box
-# behind one IP shares one anonymous Docker Hub quota, and a fleet host's
-# boxes all leave through its address. A miss falls back to Docker Hub.
+# Docker Hub pulls try Google's mirror first: every box behind one address
+# shares one anonymous Docker Hub quota.
 install -D -m 644 "$files/config/docker-daemon.json" /etc/docker/daemon.json
 echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tesser-ubuntu
 chmod 440 /etc/sudoers.d/tesser-ubuntu
