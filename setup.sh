@@ -140,12 +140,14 @@ if [[ $target == ec2 ]]; then
 
   # Box command line: Firecracker's CPU and timer quirks hidden from the start
   # (a box must resume where they differ), and virtio-mmio placeholders at the
-  # slots a microVM's disks and NIC appear on, IRQ 5 first: Nitro has it
-  # level-triggered, Firecracker edge, so it goes to a dummy disk.
+  # slots a move target's root, swap, home and NIC appear on (tesser's
+  # MOVE_SLOTS: Firecracker numbers them by attach order from IRQ 5 and
+  # 0xc0001000). IRQ 5 (level-triggered on Nitro, edge in Firecracker), 8 (rtc0)
+  # and 9 (acpi) are dummy disks the box never names.
   install -m 755 "$files/boot/09_tesser" /etc/grub.d/09_tesser
   chmod -x /etc/grub.d/10_linux /etc/grub.d/10_linux_zfs /etc/grub.d/20_linux_xen /etc/grub.d/30_os-prober
   rm -f /etc/default/grub.d/40-force-partuuid.cfg
-  mmio=$(for i in 1 2 3 4 5; do printf ' virtio_mmio.device=4K@0xc000%d000:%d' "$i" $((i + 4)); done)
+  mmio=" virtio_mmio.device=4K@0xc0002000:6 virtio_mmio.device=4K@0xc0003000:7 virtio_mmio.device=4K@0xc0006000:10 virtio_mmio.device=4K@0xc0007000:11"
   echo "GRUB_CMDLINE_LINUX=\"root=/dev/mapper/hroot panic=-1 efi=noruntime lapic=notscdeadline idle=halt nmi_watchdog=0 clearcpuid=aperfmperf,monitor$mmio tesser.root=PARTUUID=$(blkid -s PARTUUID -o value "$root")\"" > /etc/default/grub.d/95-tesser.cfg
   update-grub
 
