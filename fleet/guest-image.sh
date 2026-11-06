@@ -43,7 +43,10 @@ loop=""
 
 # What cloud-init and the EC2 AMI would have done: the disk, the user, no
 # netplan (the kernel command line sets the address), no cloud-init at all.
-echo 'LABEL=rootfs / ext4 defaults,noatime 0 1' > "$mnt/etc/fstab"
+# The root is hroot, a dm-linear over the root disk that hostd's command line
+# makes, so a move can suspend and remap it like an EC2 box's.
+echo '/dev/mapper/hroot / ext4 defaults,noatime 0 1' > "$mnt/etc/fstab"
+echo 'KERNEL=="dm-[0-9]*", ATTR{dm/name}=="hroot", SYMLINK+="mapper/hroot"' > "$mnt/etc/udev/rules.d/99-hroot.rules"
 touch "$mnt/etc/cloud/cloud-init.disabled"
 chroot "$mnt" useradd -m -s /bin/bash -G sudo,adm ubuntu
 rm -f "$mnt"/etc/netplan/*.yaml
@@ -86,8 +89,8 @@ if command -v iptables > /dev/null; then
 fi
 boot() {
   cat > "$work/vm.json" <<EOF
-{"boot-source":{"kernel_image_path":"$vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw $1"},
- "drives":[{"drive_id":"root","path_on_host":"$work/root.ext4","is_root_device":true,"is_read_only":false}],
+{"boot-source":{"kernel_image_path":"$vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off dm-mod.create=\\"hroot,,,rw,0 $(( $(stat -c %s "$work/root.ext4") / 512 )) linear /dev/vda 0\\" root=/dev/dm-0 rw $1"},
+ "drives":[{"drive_id":"root","path_on_host":"$work/root.ext4","is_root_device":false,"is_read_only":false}],
  "machine-config":{"vcpu_count":$(( $(nproc) > 32 ? 32 : $(nproc) )),"mem_size_mib":8192},
  "network-interfaces":[{"iface_id":"eth0","guest_mac":"06:00:0a:c7:00:02","host_dev_name":"$tap"}],
  "vsock":{"guest_cid":3,"uds_path":"$work/v.sock"}}

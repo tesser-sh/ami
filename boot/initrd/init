@@ -1,0 +1,89 @@
+#!/bin/sh
+# /init of the box's initramfs. The root filesystem lives on p1 of the boot
+# disk, under dm: "hera" is dm-era over p1 with its metadata on the tesser-era
+# partition, so a move can ask which blocks changed since the image was made,
+# and "hroot" is linear over hera, the table a move reloads as a mirror.
+# Era has to see every write, and a boot that is about to resume a hibernation
+# image must not load it (the resumed kernel already holds it), so this runs
+# before anything mounts p1. /var/lib/tesser/era says which era the image was
+# made in ("since <era>", set by cleanup.sh), or "reset" once the metadata had
+# to be made again and nothing is known about what changed.
+set -u
+dev=/dev
+sys=/sys
+cmdline=/proc/cmdline
+newroot=/newroot
+
+say() { echo "tesser-init: $*" > "$dev/kmsg" 2> /dev/null || echo "tesser-init: $*"; }
+fail() { say "$*, powering off"; sleep 5; poweroff -f; exit 1; }
+
+mount -t devtmpfs devtmpfs "$dev" 2> /dev/null
+mount -t proc proc /proc 2> /dev/null
+mount -t sysfs sysfs "$sys" 2> /dev/null
+mount -t tmpfs -o mode=755,nosuid,nodev tmpfs /run 2> /dev/null
+
+partuuid=
+for arg in $(cat "$cmdline"); do
+  case $arg in tesser.root=PARTUUID=*) partuuid=${arg#tesser.root=PARTUUID=} ;; esac
+done
+[ -n "$partuuid" ] || fail "no tesser.root=PARTUUID= on the command line"
+
+root= meta=
+for _ in $(seq 300); do
+  roots=$(blkid -t PARTUUID="$partuuid" -o device)
+  [ "$(echo "$roots" | grep -c .)" -gt 1 ] && fail "more than one partition $partuuid:" $roots
+  root=$roots
+  if [ -n "$root" ]; then
+    part=${root#/dev/}
+    disk=/dev/$(basename "$(readlink -f "$sys/class/block/$part/..")")
+    for p in "$sys/class/block/$(basename "$disk")"/*/partition; do
+      p=$(basename "$(dirname "$p")")
+      [ "$(blkid -s PARTLABEL -o value "/dev/$p")" = tesser-era ] && meta=/dev/$p
+    done
+    [ -n "$meta" ] && break
+  fi
+  sleep 0.1
+done
+[ -n "$root" ] || fail "no partition $partuuid"
+[ -n "$meta" ] || fail "no tesser-era partition on $disk"
+
+offset=$(debugfs -R "bmap /swap-hibinit 0" "$root" 2> /dev/null)
+if [ -n "$offset" ] && [ "$offset" -gt 0 ] && [ "$(dd if="$root" bs=1 skip=$((offset * 4096 + 4086)) count=9 2> /dev/null)" = S1SUSPEND ]; then
+  say "resuming from $root"
+  echo "$offset" > "$sys/power/resume_offset"
+  cat "$sys/class/block/$part/dev" > "$sys/power/resume"
+  say "resume failed, booting"
+fi
+
+start=$(cat "$sys/class/block/$part/start")
+size=$(cat "$sys/class/block/$part/size")
+if [ $((start + size + 34)) -lt "$(blockdev --getsz "$disk")" ]; then
+  echo ', +' | sfdisk -q --no-reread --no-tell-kernel -N "$(cat "$sys/class/block/$part/partition")" "$disk" > /dev/null &&
+    blockdev --rereadpt "$disk" && say "grew $root to $(blockdev --getsz "$root") sectors"
+  for _ in $(seq 50); do [ -e "$root" ] && [ -e "$meta" ] && break; sleep 0.1; done
+fi
+
+fresh=0
+[ -z "$(dd if="$meta" bs=4096 count=1 2> /dev/null | tr -d '\0')" ] && fresh=1
+sectors=$(blockdev --getsz "$root")
+if ! DM_DISABLE_UDEV=1 dmsetup create --noudevsync hera --table "0 $sectors era $meta $root 1024"; then
+  say "era metadata on $meta unreadable, making it again"
+  dd if=/dev/zero of="$meta" bs=4096 count=1 conv=fsync 2> /dev/null
+  fresh=1
+  DM_DISABLE_UDEV=1 dmsetup create --noudevsync hera --table "0 $sectors era $meta $root 1024" || fail "dm-era over $root failed"
+fi
+DM_DISABLE_UDEV=1 dmsetup create --noudevsync hroot --table "0 $sectors linear $dev/mapper/hera 0" || fail "hroot over hera failed"
+
+mkdir -p "$newroot"
+mount -t ext4 -o rw "$dev/mapper/hroot" "$newroot" || fail "mounting hroot failed"
+if [ "$fresh" = 1 ]; then
+  era=$newroot/var/lib/tesser/era
+  mkdir -p "$(dirname "$era")"
+  if [ -e "$era" ]; then echo "reset $(date -u +%FT%TZ)" > "$era"; else echo "since 0" > "$era"; fi
+  say "new era metadata: $(cat "$era")"
+fi
+out=$(resize2fs "$dev/mapper/hroot" 2>&1) || say "resize2fs failed:" $out
+mount -o remount,ro "$newroot"
+
+for m in "$dev" /proc "$sys" /run; do mount --move "$m" "$newroot$m"; done
+exec switch_root "$newroot" /sbin/init
