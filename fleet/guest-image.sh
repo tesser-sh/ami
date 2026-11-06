@@ -6,10 +6,11 @@
 # as a template would, and fails unless smoke.sh passes and the guest settles
 # and answers its host on vsock.
 # Runs as root with /dev/kvm and firecracker on PATH.
-# usage: guest-image.sh <vmlinux> <out root.ext4>
+# usage: guest-image.sh <kernel/build.sh out dir> <out root.ext4>
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
-vmlinux=${1:?vmlinux}
+kernel=${1:?kernel out dir}
+vmlinux=$kernel/vmlinux
 out=${2:?out root.ext4}
 work=$(mktemp -d "${WORK:-/tmp}/guest-image.XXXX")
 mnt=$work/mnt
@@ -42,7 +43,8 @@ losetup -d "$loop"
 loop=""
 
 # What cloud-init and the EC2 AMI would have done: the disk, the user, no
-# netplan (the kernel command line sets the address), no cloud-init at all.
+# netplan (tesser-ip sets the address the kernel command line names), no
+# cloud-init at all.
 echo 'LABEL=rootfs / ext4 defaults,noatime 0 1' > "$mnt/etc/fstab"
 touch "$mnt/etc/cloud/cloud-init.disabled"
 chroot "$mnt" useradd -m -s /bin/bash -G sudo,adm ubuntu
@@ -51,6 +53,8 @@ echo tesser-box > "$mnt/etc/hostname"
 
 mkdir -p "$mnt/root/ami"
 cp -a "$repo/setup.sh" "$repo/boot" "$repo/config" "$repo/shim" "$repo/verify" "$repo/fleet" "$mnt/root/ami/"
+install -d "$mnt/root/ami/kernel-out"
+cp -a "$kernel/debs" "$mnt/root/ami/kernel-out/"
 install -m 644 /dev/stdin "$mnt/etc/systemd/system/tesser-build.service" <<'EOF'
 [Unit]
 After=network-online.target systemd-resolved.service
@@ -65,6 +69,9 @@ WantedBy=multi-user.target
 EOF
 chroot "$mnt" systemctl enable tesser-build.service
 install -D -m 644 "$repo/fleet/guest/resolved.conf" "$mnt/etc/systemd/resolved.conf.d/10-tesser.conf"
+install -m 755 "$repo/fleet/guest/tesser-ip" "$mnt/usr/local/sbin/tesser-ip"
+install -m 644 "$repo/fleet/guest/tesser-ip.service" "$mnt/etc/systemd/system/tesser-ip.service"
+chroot "$mnt" systemctl enable tesser-ip.service
 install -D -m 644 "$repo/fleet/guest/dirty.conf" "$mnt/etc/sysctl.d/60-tesser-dirty.conf"
 umount "$mnt"
 

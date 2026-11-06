@@ -75,7 +75,7 @@ build {
   }
 
   provisioner "file" {
-    sources     = ["boot", "config", "hibernate", "shim", "verify"]
+    sources     = ["boot", "config", "hibernate", "shim", "verify", "kernel-out"]
     destination = "/tmp/tesser/"
   }
 
