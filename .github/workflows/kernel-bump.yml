@@ -1,0 +1,70 @@
+name: kernel-bump
+
+# Watches kernel.org for the next 6.18 LTS release. Stable releases are how
+# CVE fixes reach a longterm kernel, so the day one lands this pins it on a
+# branch, builds and smoke-tests it the way images.yml always does, and opens
+# a pull request. Merging it is a person's call; build.yml then publishes it.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: kernel-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      branch: ${{ steps.pin.outputs.branch }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - id: pin
+        run: |
+          set -euo pipefail
+          source fleet/versions
+          series=${kernel%.*}
+          latest=$(curl -fsSL https://www.kernel.org/releases.json | jq -r --arg s "$series." '[.releases[] | select(.version | startswith($s)) | .version][0] // empty')
+          [[ -n $latest ]] || { echo "kernel.org lists no $series release" >&2; exit 1; }
+          if [[ $latest == "$kernel" ]] || [[ $(printf '%s\n' "$kernel" "$latest" | sort -V | tail -1) == "$kernel" ]]; then
+            echo "pinned $kernel is the newest $series"
+            exit 0
+          fi
+          branch=kernel-bump/$latest
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
+            echo "$branch is already open"
+            exit 0
+          fi
+          sha=$(curl -fsSL "https://cdn.kernel.org/pub/linux/kernel/v${latest%%.*}.x/sha256sums.asc" | awk -v f="linux-$latest.tar.xz" '$2 == f { print $1 }')
+          [[ $sha =~ ^[0-9a-f]{64}$ ]] || { echo "no sha256 for linux-$latest.tar.xz" >&2; exit 1; }
+          curl -fsSL -o linux.tar.xz "https://cdn.kernel.org/pub/linux/kernel/v${latest%%.*}.x/linux-$latest.tar.xz"
+          echo "$sha  linux.tar.xz" | sha256sum -c --quiet
+          rm linux.tar.xz
+          sed -i -e "s/^kernel=.*/kernel=$latest/" -e "s/^kernel_sha256=.*/kernel_sha256=$sha/" fleet/versions
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -qam "chore(kernel): $latest"
+          git push -q origin "$branch"
+          printf 'branch=%s\nlatest=%s\nfrom=%s\n' "$branch" "$latest" "$kernel" >> "$GITHUB_OUTPUT"
+
+      - if: steps.pin.outputs.branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create --head "${{ steps.pin.outputs.branch }}" --title "chore(kernel): ${{ steps.pin.outputs.latest }}" --body \
+            "kernel.org released ${{ steps.pin.outputs.latest }} (pinned: ${{ steps.pin.outputs.from }}). Changelog: https://cdn.kernel.org/pub/linux/kernel/v6.x/ChangeLog-${{ steps.pin.outputs.latest }}. The kernel-bump run builds it, smoke-tests it in Firecracker and attaches the kernel and guest image; a pull request opened by this workflow doesn't trigger images.yml itself."
+
+  images:
+    needs: bump
+    if: needs.bump.outputs.branch
+    uses: ./.github/workflows/images.yml
+    with:
+      ref: ${{ needs.bump.outputs.branch }}

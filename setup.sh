@@ -4,7 +4,7 @@
 set -euo pipefail
 files=${TESSER_FILES:?}
 # ec2: the box AMI. firecracker: the root disk of a fleet microVM, which boots
-# fleet/kernel.sh's kernel and sleeps by memory snapshot, not by hibernation.
+# the tesser kernel's vmlinux and sleeps by memory snapshot, not by hibernation.
 target=${TESSER_TARGET:-ec2}
 [[ $target == ec2 || $target == firecracker ]] || { echo "setup.sh: unknown target $target" >&2; exit 1; }
 
