@@ -9,6 +9,7 @@ target=${TESSER_TARGET:-ec2}
 if [[ $target == ec2 ]]; then
   kernels=(/boot/vmlinuz-*)
   [[ ${kernels[*]} == "/boot/vmlinuz-$(uname -r)" ]] || { echo "booted $(uname -r), image has ${kernels[*]}" >&2; exit 1; }
+  [[ $(findmnt -no SOURCE /) == /dev/mapper/hroot && $(dmsetup table hera) == *" era "* && $(dmsetup deps -o devname hroot) == *"(hera)"* ]] || { echo "/ is not on dm-era" >&2; exit 1; }
 fi
 echo "kernel $(uname -r) $(uname -v)"
 [[ $(cat /sys/block/zram0/comp_algorithm) == *"[zstd]"* ]] || { echo "zram is not on zstd" >&2; exit 1; }

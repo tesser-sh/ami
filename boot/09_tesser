@@ -1,0 +1,17 @@
+#!/bin/sh
+# grub-mkconfig's only entry: the tesser kernel with its initramfs, which puts
+# the root filesystem under dm (boot/initrd/init).
+set -e
+boot=$(grub-probe --target=fs_uuid /boot)
+for k in /boot/vmlinuz-*-tesser; do
+  [ -e "$k" ] || continue
+  cat << ENTRY
+menuentry 'tesser ${k#/boot/vmlinuz-}' --id tesser {
+  insmod part_gpt
+  insmod ext2
+  search --no-floppy --fs-uuid --set=root $boot
+  linux /${k#/boot/} $GRUB_CMDLINE_LINUX $GRUB_CMDLINE_LINUX_DEFAULT
+  initrd /tesser-initrd.img
+}
+ENTRY
+done
