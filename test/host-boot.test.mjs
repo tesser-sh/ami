@@ -80,18 +80,21 @@ after(() => {
   cell.close();
 });
 
-async function boot({ tries = 1 } = {}) {
-  const root = mkdtempSync(join(dir, "root-"));
+async function boot({ tries = 1, root = mkdtempSync(join(dir, "root-")), swapsOn = "" } = {}) {
   const bin = join(root, "bin");
-  mkdirSync(bin);
+  mkdirSync(bin, { recursive: true });
   const systemctl = join(root, "systemctl.log");
+  const swaps = join(root, "swap.log");
+  mkdirSync(join(root, "zswap"), { recursive: true });
+  writeFileSync(join(root, "meminfo"), "MemTotal:        8388608 kB\nMemFree:         1024 kB\n");
   const shim = (name, body) => {
     writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
     chmodSync(join(bin, name), 0o755);
   };
   shim("systemctl", `echo "$@" >> ${systemctl}`);
-  shim("swapoff", "exit 0");
-  shim("swapon", "exit 0");
+  shim("fallocate", 'truncate -s "$2" "$3"');
+  shim("mkswap", `echo "mkswap $@" >> ${swaps}`);
+  shim("swapon", `case "$1" in --show*) printf '%s' '${swapsOn}'; exit 0 ;; esac; echo "swapon $@" >> ${swaps}`);
   shim("mountpoint", "exit 0");
   const script = SCRIPT.replace(/^imds=.*$/m, `imds=http://127.0.0.1:${imds.port}`)
     .replace(/^s3=.*$/m, `s3=http://127.0.0.1:${s3.port}`)
@@ -100,6 +103,8 @@ async function boot({ tries = 1 } = {}) {
     .replace(/^etc=.*$/m, `etc=${root}/etc/tesser`)
     .replace(/^opt=.*$/m, `opt=${root}/opt/tesser`)
     .replace(/^srv=.*$/m, `srv=${root}/srv`)
+    .replace(/^zswap=.*$/m, `zswap=${root}/zswap`)
+    .replace(/^meminfo=.*$/m, `meminfo=${root}/meminfo`)
     .replace(/^tries=.*$/m, `tries=${tries}`)
     .replace(/^pause=.*$/m, "pause=0");
   const file = join(root, "tesser-host-boot");
@@ -110,7 +115,7 @@ async function boot({ tries = 1 } = {}) {
     stderr += chunk;
   });
   const code = await new Promise((resolve) => run.on("close", resolve));
-  return { code, stderr, root, systemctl };
+  return { code, stderr, root, systemctl, swaps };
 }
 
 function config(overrides = {}) {
@@ -160,6 +165,20 @@ test("the hostd the cell named is fetched with credentials the cell gave for the
   });
   assert.equal(lstatSync(join(run.root, "etc/tesser/hostd.json")).mode & 0o077, 0);
   assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block tesser-hostd\n");
+});
+
+test("a host swaps on a file in /srv half the size of its memory, behind zstd zswap, and only once", async () => {
+  userData = config();
+  const run = await boot();
+  assert.equal(run.code, 0, run.stderr);
+  const swap = join(run.root, "srv/swap");
+  assert.equal(lstatSync(swap).size, 4 * 2 ** 30);
+  assert.equal(lstatSync(swap).mode & 0o777, 0o600);
+  assert.equal(readFileSync(run.swaps, "utf8"), `mkswap ${swap}.new\nswapon ${swap}\n`);
+  assert.deepEqual(["compressor", "max_pool_percent", "enabled"].map((f) => readFileSync(join(run.root, "zswap", f), "utf8")), ["zstd\n", "20\n", "Y\n"]);
+  const again = await boot({ root: run.root, swapsOn: `${swap}\n` });
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(readFileSync(again.swaps, "utf8"), `mkswap ${swap}.new\nswapon ${swap}\n`);
 });
 
 test("an org's host asks its org's cell path for hostd credentials and hands hostd its org id", async () => {

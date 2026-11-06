@@ -32,11 +32,11 @@ apt-get autoremove --purge -y
 
 bash "$files/fleet/install-firecracker.sh" /usr/local/bin
 
-# Boxes' memory is theirs alone: no page merging across tenants, and no swap
-# under a guest whose memory is a snapshot file. Huge pages back guest memory.
+# No page merging across tenants. Huge pages back guest memory. Swap is made
+# on /srv by tesser-host-boot, so a host overcommitted on memory slows down
+# instead of killing a box.
 install -m 644 "$files/fleet/host/tesser-host.tmpfiles" /etc/tmpfiles.d/tesser-host.conf
 install -m 644 "$files/fleet/host/99-tesser-host.conf" /etc/sysctl.d/99-tesser-host.conf
-systemctl mask swap.target
 
 install -m 644 "$files/config/99-tesser.cfg" /etc/cloud/cloud.cfg.d/99-tesser.cfg
 install -m 755 "$files/fleet/host/tesser-host-boot" /usr/local/sbin/tesser-host-boot

@@ -14,6 +14,8 @@ cell=
 etc=/etc/tesser
 opt=/opt/tesser
 srv=/srv
+zswap=/sys/module/zswap/parameters
+meminfo=/proc/meminfo
 tries=10
 pause=3
 get() { curl -fsS --connect-timeout 5 --max-time 120 "$@"; }
@@ -56,9 +58,6 @@ version=$(field .hostd.version)
 sha256=$(field .hostd.sha256)
 region=$(metadata meta-data/placement/region)
 
-swapoff -a
-[ -z "$(swapon --noheadings)" ] || refuse "to run with swap on"
-
 if ! mountpoint -q "$srv"; then
   disk=
   for d in $(lsblk -dpno NAME,TYPE | awk '$2 == "disk" { print $1 }'); do
@@ -74,6 +73,19 @@ if ! mountpoint -q "$srv"; then
   mount "$srv"
 fi
 mkdir -p "$srv/golden" "$srv/vms" "$srv/jail"
+
+# The cell places boxes past the host's memory by what they use, and never by
+# more than the swap: half the memory, in a file on $srv, behind zswap.
+if [ ! -f "$srv/swap" ]; then
+  fallocate -l "$(($(awk '/^MemTotal:/ { print $2 }' "$meminfo") / 2))K" "$srv/swap.new"
+  chmod 600 "$srv/swap.new"
+  mkswap "$srv/swap.new" > /dev/null
+  mv "$srv/swap.new" "$srv/swap"
+fi
+echo zstd > "$zswap/compressor"
+echo 20 > "$zswap/max_pool_percent"
+echo Y > "$zswap/enabled"
+swapon --show=NAME --noheadings | grep -qxF "$srv/swap" || swapon "$srv/swap"
 
 hostd=$opt/$version
 if [ ! -x "$hostd" ]; then
