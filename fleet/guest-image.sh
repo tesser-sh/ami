@@ -43,7 +43,8 @@ losetup -d "$loop"
 loop=""
 
 # What cloud-init and the EC2 AMI would have done: the disk, the user, no
-# netplan (the kernel command line sets the address), no cloud-init at all.
+# netplan (tesser-ip sets the address the kernel command line names), no
+# cloud-init at all.
 echo 'LABEL=rootfs / ext4 defaults,noatime 0 1' > "$mnt/etc/fstab"
 touch "$mnt/etc/cloud/cloud-init.disabled"
 chroot "$mnt" useradd -m -s /bin/bash -G sudo,adm ubuntu
@@ -68,6 +69,9 @@ WantedBy=multi-user.target
 EOF
 chroot "$mnt" systemctl enable tesser-build.service
 install -D -m 644 "$repo/fleet/guest/resolved.conf" "$mnt/etc/systemd/resolved.conf.d/10-tesser.conf"
+install -m 755 "$repo/fleet/guest/tesser-ip" "$mnt/usr/local/sbin/tesser-ip"
+install -m 644 "$repo/fleet/guest/tesser-ip.service" "$mnt/etc/systemd/system/tesser-ip.service"
+chroot "$mnt" systemctl enable tesser-ip.service
 install -D -m 644 "$repo/fleet/guest/dirty.conf" "$mnt/etc/sysctl.d/60-tesser-dirty.conf"
 umount "$mnt"
 

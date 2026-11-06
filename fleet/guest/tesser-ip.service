@@ -1,0 +1,15 @@
+[Unit]
+Description=Address from the kernel command line
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target
+BindsTo=sys-subsystem-net-devices-eth0.device
+After=sys-subsystem-net-devices-eth0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tesser-ip
+
+[Install]
+WantedBy=sysinit.target

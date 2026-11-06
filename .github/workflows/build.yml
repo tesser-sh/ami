@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: 24
 
-      - run: for f in setup.sh smoke.sh cleanup.sh boot/tesser-boot shim/bun hibernate/tesser-hibernate kernel/build.sh fleet/*.sh fleet/host/setup.sh fleet/host/smoke.sh fleet/host/tesser-host-boot fleet/guest/tesser-resumed fleet/guest/tesser-hostkeys; do bash -n "$f"; done
+      - run: for f in setup.sh smoke.sh cleanup.sh boot/tesser-boot shim/bun hibernate/tesser-hibernate kernel/build.sh fleet/*.sh fleet/host/setup.sh fleet/host/smoke.sh fleet/host/tesser-host-boot fleet/guest/tesser-resumed fleet/guest/tesser-hostkeys fleet/guest/tesser-ip; do bash -n "$f"; done
 
       - run: node --test test/*.test.mjs
 
