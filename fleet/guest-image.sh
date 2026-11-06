@@ -6,10 +6,11 @@
 # as a template would, and fails unless smoke.sh passes and the guest settles
 # and answers its host on vsock.
 # Runs as root with /dev/kvm and firecracker on PATH.
-# usage: guest-image.sh <vmlinux> <out root.ext4>
+# usage: guest-image.sh <kernel/build.sh out dir> <out root.ext4>
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
-vmlinux=${1:?vmlinux}
+kernel=${1:?kernel out dir}
+vmlinux=$kernel/vmlinux
 out=${2:?out root.ext4}
 work=$(mktemp -d "${WORK:-/tmp}/guest-image.XXXX")
 mnt=$work/mnt
@@ -51,6 +52,8 @@ echo tesser-box > "$mnt/etc/hostname"
 
 mkdir -p "$mnt/root/ami"
 cp -a "$repo/setup.sh" "$repo/boot" "$repo/config" "$repo/shim" "$repo/verify" "$repo/fleet" "$mnt/root/ami/"
+install -d "$mnt/root/ami/kernel-out"
+cp -a "$kernel/debs" "$mnt/root/ami/kernel-out/"
 install -m 644 /dev/stdin "$mnt/etc/systemd/system/tesser-build.service" <<'EOF'
 [Unit]
 After=network-online.target systemd-resolved.service

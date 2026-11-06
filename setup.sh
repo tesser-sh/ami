@@ -25,20 +25,21 @@ apt-get install -y ca-certificates curl rsync unzip nftables nbd-client docker.i
 add-apt-repository -y ppa:git-core/ppa
 apt-get install -y git
 
-# The kernel track every box boots, and the one place to change it. Canonical's
-# noble image rolls to the newest HWE kernel (7.0 now), and MongoDB 8 refuses
-# to start on 6.19 through 7.0.13 (SERVER-121912). noble has no 6.18 for aws
-# and 6.17 no longer gets fixes, so boxes run the 24.04 LTS kernel, which
-# stays on 6.8 and is patched until 2029. Every other kernel goes, so grub
-# boots this one; smoke.sh fails the build if a box would boot anything else.
-if [[ $target == ec2 ]]; then
-  kernel=linux-aws-lts-24.04
-  apt-get install -y "$kernel"
-  abi=$(dpkg-query -W -f='${Depends}' "linux-image-${kernel#linux-}" | grep -oP 'linux-image-\K[0-9][^ ,]*')
-  old=$(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' 'linux-*' | sed -n 's/^ii *//p' |
-    grep -E '^linux-(image-|headers-|tools-|modules-)?aws$|[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | grep -vF "${abi%-aws}" || true)
-  [[ -z $old ]] || apt-get purge -y $old
-fi
+# The tesser kernel (kernel/build.sh), the one every box runs: Canonical's
+# 24.04 LTS linux-aws (6.8, patched until 2029) rebuilt with our patches, from
+# the .debs this build was handed. MongoDB 8 refuses to start on 6.19 through
+# 7.0.13 (SERVER-121912), so not the newest HWE kernel Canonical's image boots.
+# Every other kernel goes, so grub boots this one; smoke.sh fails the build if
+# a box would boot anything else. Held, because Canonical's own build of the
+# same version has the same package names and isn't the same build.
+debs=("$files"/kernel-out/debs/linux-{image-unsigned,modules,modules-extra}-[0-9]*.deb)
+apt-get install -y "${debs[@]}"
+ours=$(dpkg-deb -f "${debs[0]}" Package)
+ours=${ours#linux-image-unsigned-}
+old=$(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' 'linux-*' | sed -n 's/^ii *//p' |
+  grep -E '^linux-(image-|headers-|tools-|modules-)?aws$|[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | grep -vF -- "-$ours" || true)
+[[ -z $old ]] || apt-get purge -y $old
+apt-mark hold "linux-image-unsigned-$ours" "linux-modules-$ours" "linux-modules-extra-$ours"
 apt-get autoremove --purge -y
 rm -f /etc/apt/apt.conf.d/99update-notifier /etc/apt/apt.conf.d/20packagekit
 echo 'man-db man-db/auto-update boolean false' | debconf-set-selections

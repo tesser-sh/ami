@@ -28,7 +28,7 @@ permissions:
 jobs:
   kernel:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -43,11 +43,18 @@ jobs:
       - if: steps.kernel.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          source fleet/versions
           sudo apt-get update -q
-          sudo apt-get install -y -q build-essential flex bison bc libelf-dev libssl-dev dwarves
-          bash kernel/build.sh "$PWD/kernel-out"
+          sudo apt-get install -y -q dpkg-dev fakeroot
+          curl -fsSL -o /tmp/k.dsc "https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/linux-aws/$ubuntu_kernel/linux-aws_$ubuntu_kernel.dsc"
+          echo "$ubuntu_kernel_dsc_sha256  /tmp/k.dsc" | sha256sum -c --quiet
+          sudo apt-get build-dep -y -q --arch-only /tmp/k.dsc
+          sudo install -d -o "$USER" /mnt/kernel
+          start=$(date +%s)
+          KERNEL_WORK=/mnt/kernel bash kernel/build.sh "$PWD/kernel-out"
+          echo "kernel build: $(( $(date +%s) - start )) s on $(nproc) vCPUs"
 
-      - run: cat kernel-out/release && sha256sum kernel-out/*
+      - run: cat kernel-out/release kernel-out/build-id && sha256sum kernel-out/vmlinux kernel-out/bzImage kernel-out/debs/*
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -82,7 +89,7 @@ jobs:
           set -euo pipefail
           work=/mnt/guest
           sudo mkdir -p "$work"
-          sudo WORK="$work" bash fleet/guest-image.sh "$PWD/kernel-out/vmlinux" "$work/root.ext4"
+          sudo WORK="$work" bash fleet/guest-image.sh "$PWD/kernel-out" "$work/root.ext4"
           sudo zstd -T0 -3 -q -o "$work/root.ext4.zst" "$work/root.ext4"
           zstd -T0 -19 -q -o vmlinux.zst kernel-out/vmlinux
           sudo mv "$work/root.ext4.zst" root.ext4.zst

@@ -47,9 +47,10 @@ jobs:
           install -m 755 verify/verify.mjs "$dir/tesser-verify-boxd"
           "$dir/tesser-verify-boxd" "$dir/bundle" "$dir/statement" "$dir/statement.sig"
 
-  # The box image and the fleet host image, each an AMI built by packer.
+  # The box image (on the kernel images.yml built) and the fleet host image,
+  # each an AMI built by packer.
   ami:
-    needs: check
+    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -66,6 +67,11 @@ jobs:
           role-to-assume: arn:aws:iam::131798513069:role/tesser-ami-publish
           role-duration-seconds: 7200
           aws-region: us-west-2
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: kernel
+          path: kernel-out
 
       - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3.4.0
         with:
