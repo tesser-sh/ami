@@ -14,7 +14,7 @@ for tool in jq xfs_io nft wg conntrack zstd; do command -v "$tool" > /dev/null |
 
 [[ $(cat /sys/kernel/mm/transparent_hugepage/enabled) == *"[always]"* ]] || { echo "THP is not always" >&2; exit 1; }
 [[ $(cat /sys/kernel/mm/ksm/run) == 0 ]] || { echo "KSM is on" >&2; exit 1; }
-[[ -z $(swapon --noheadings) ]] || { echo "swap is on" >&2; exit 1; }
+[[ -w /sys/module/zswap/parameters/enabled ]] || { echo "no zswap" >&2; exit 1; }
 [[ $(sysctl -n net.ipv4.ip_forward) == 1 ]] || { echo "ip_forward is off" >&2; exit 1; }
 [[ $(systemctl is-enabled tesser-host-boot.service) == enabled ]]
 systemd-analyze verify /etc/systemd/system/tesser-host-boot.service
