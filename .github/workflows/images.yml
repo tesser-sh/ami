@@ -14,6 +14,10 @@ on:
     paths:
       - kernel/**
       - fleet/**
+      - boot/**
+      - config/**
+      - shim/**
+      - verify/**
       - setup.sh
       - smoke.sh
       - .github/workflows/images.yml

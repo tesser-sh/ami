@@ -98,6 +98,7 @@ EOF
 }
 boot "ip=10.199.0.2::10.199.0.1:255.255.255.252::eth0:off"
 timeout 3600 tail --pid="$fc" -f /dev/null || kill "$fc" 2>/dev/null || true
+wait "$fc" 2>/dev/null || true
 
 mount -o loop "$work/root.ext4" "$mnt"
 if [ ! -f "$mnt/root/build.ok" ]; then
@@ -133,6 +134,7 @@ chroot "$mnt" systemctl enable tesser-smoke.service
 umount "$mnt"
 boot "ip=10.199.0.2::10.199.0.1:255.255.255.252::eth0:off systemd.mask=tesser-boot.service"
 timeout 1800 tail --pid="$fc" -f /dev/null || kill "$fc" 2>/dev/null || true
+wait "$fc" 2>/dev/null || true
 mount -o loop "$work/root.ext4" "$mnt"
 cat "$mnt/root/smoke.log" || tail -60 "$work/console.log"
 [ -f "$mnt/root/smoke.ok" ] || { echo "guest-image: smoke.sh failed" >&2; exit 1; }
