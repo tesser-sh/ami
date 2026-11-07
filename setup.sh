@@ -129,6 +129,16 @@ else
   # dockerd starts on its socket: a box's home stops it before it mounts.
   systemctl disable docker.service containerd.service
   systemctl enable docker.socket
+  # A box that moves to EC2 is reached through AWS's SSM agent, which Ubuntu's
+  # cloud image lacks and the EC2 AMI ships as a snap. It starts only with an
+  # ENA NIC: a resumed microVM's systemd still believes it runs in Firecracker.
+  source <(grep "^ssm_agent" "$files/fleet/versions")
+  install -D -m 644 "$guest/amazon-ssm-agent-ec2.conf" /etc/systemd/system/amazon-ssm-agent.service.d/ec2.conf
+  curl -fsSL -o /tmp/amazon-ssm-agent.deb "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/$ssm_agent/debian_amd64/amazon-ssm-agent.deb"
+  echo "$ssm_agent_sha256  /tmp/amazon-ssm-agent.deb" | sha256sum -c --quiet
+  dpkg -i /tmp/amazon-ssm-agent.deb
+  rm /tmp/amazon-ssm-agent.deb
+  systemctl enable amazon-ssm-agent.service
   systemctl mask systemd-networkd-wait-online.service serial-getty@ttyS0.service multipathd.service multipathd.socket \
     snapd.service snapd.socket snapd.seeded.service lxd-installer.socket
   install -d /etc/tesser
