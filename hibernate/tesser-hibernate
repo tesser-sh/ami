@@ -53,6 +53,11 @@ awk '/^MemTotal:/ { print int($2 * 1024 * 0.45) }' "$meminfo" > "$power/image_si
 # The image goes to the swap file. Priority 0 keeps it below zram once the box
 # is back, so everyday swapping stays in memory.
 grep -q "^$swap " "$swaps" || swapon --priority=0 "$swap"
+# The kernel writes the image where /sys/power/resume points: the file's first
+# block on the root's dm device. Nothing at boot can set it (the agent makes
+# the file after boot, and its grub line can't name a dm device).
+python3 -c 'import array, fcntl, sys; f = open(sys.argv[1]); b = array.array("L", [0]); fcntl.ioctl(f, 1, b); print(b[0])' "$swap" > "$power/resume_offset"
+stat -c '%Hd:%Ld' "$swap" > "$power/resume"
 ssm=(snap.amazon-ssm-agent.amazon-ssm-agent.service amazon-ssm-agent.service)
 systemctl stop "${ssm[@]}" 2>/dev/null
 sync
