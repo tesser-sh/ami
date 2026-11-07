@@ -1,12 +1,12 @@
 {
   "hostAmis": {
-    "us-east-1": "ami-0171a06f448b99993",
-    "us-west-2": "ami-0fe417ba12a131d32"
+    "us-east-1": "ami-0fe4a3b6005db53a9",
+    "us-west-2": "ami-0b6e1497a2d5aa20e"
   },
   "image": {
-    "id": "build-42346136085",
-    "root": "497d570f20f351532b225ea9ab3cb16f38d7c00328fc0fd42566cca6ee16dfaf",
-    "kernel": "f579898156c3e2bcced06a409bd6c0378c47c6b6f8095564e60d378975bd4baf"
+    "id": "build-42417642631",
+    "root": "cd1051b9ddad3a4b43db0fa1488306af77424569295c622a32cf1e1567cc16c6",
+    "kernel": "d9cc1764babf251746e8c4e95fe3644ebd8ae47e02b4d7cfdfb9dde881d57343"
   },
   "imagesBuckets": {
     "us-west-2": "tesser-fleet-images-prod-131798513069-us-west-2",
