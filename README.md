@@ -13,6 +13,7 @@ Stock Ubuntu 24.04 LTS from Canonical, the newest one Canonical has published wh
   - bun through [`shim/bun`](shim/bun), installed as `bun` and `bunx`. It runs the version the repo pins, from the nearest `.bun-version` or `"packageManager": "bun@<version>"` in a `package.json` at or above the working directory, and installs that release from bun's GitHub releases under `~/.bun/versions` the first time it runs. A repo that pins nothing gets the newest bun as of the build;
   - uv for python, and mise for ruby. mise installs only precompiled ruby (`ruby.compile = false`) and reads `.ruby-version`, so `mise install` gets the repo's ruby. It trusts every mise config under `/home/ubuntu`, and its shims are on every PATH. Both are the newest releases as of the build;
   - passwordless sudo for `ubuntu`;
+  - Docker Hub pulls try Google's mirror (`mirror.gcr.io`, [`config/docker-daemon.json`](config/docker-daemon.json)) first, and go to Docker Hub when it can't serve them. Every box behind one address, including all of a fleet host's boxes, shares one anonymous Docker Hub quota;
   - no login banner: sshd's `pam_motd` is off, so a new ssh session doesn't wait on update-motd's scripts;
   - higher inotify limits;
   - swap in compressed memory (zram, up to 8 GB), so a memory spike slows a box down instead of getting a process OOM-killed.
