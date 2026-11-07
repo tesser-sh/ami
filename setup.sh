@@ -113,6 +113,8 @@ if [[ $target == ec2 ]]; then
   disk=/dev/$(lsblk -no PKNAME "$bootpart")
   bootsys=/sys/class/block/${bootpart#/dev/}
   start=$(cat "$bootsys/start") size=$(cat "$bootsys/size")
+  # fwupd (started by apt) holds /boot read-only in its own mount namespace.
+  systemctl stop fwupd.service
   umount /boot/efi /boot
   e2fsck -fy "$bootpart" || (($? <= 1))
   resize2fs "$bootpart" 512M
