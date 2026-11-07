@@ -1,0 +1,5 @@
+[Match]
+Driver=ena
+
+[Network]
+DHCP=ipv4

@@ -1,0 +1,14 @@
+#!/bin/bash
+# Sets the address hostd puts on the kernel command line,
+# ip=<address>::<gateway>:<netmask>::<device>:off, the way the kernel's own
+# IP autoconfig would. Ubuntu's kernel doesn't build that (no CONFIG_IP_PNP).
+set -euo pipefail
+spec=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^ip=//p' | tail -1)
+[[ -n $spec ]] || exit 0
+IFS=: read -r addr _ gw mask _ dev _ <<< "$spec"
+bits=0
+IFS=. read -r -a octets <<< "$mask"
+for o in "${octets[@]}"; do while ((o)); do bits=$((bits + (o & 1))) o=$((o >> 1)); done; done
+ip link set "$dev" up
+ip addr replace "$addr/$bits" dev "$dev"
+[[ -z $gw ]] || ip route replace default via "$gw" dev "$dev" onlink

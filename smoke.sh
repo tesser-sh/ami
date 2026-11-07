@@ -1,17 +1,52 @@
 #!/bin/bash
-# Runs as root after the build instance reboots into the image's kernel: the
-# containers boxes run most must start on it, or the build fails. Every image
-# pulled here is deleted again.
+# Runs as root on the image's own kernel: on the box AMI's build instance after
+# it reboots, and in a microVM on a copy of the fleet guest's root disk. What
+# boxes run most must work on it, or the build fails. Everything pulled or
+# installed here is deleted again.
 set -euo pipefail
+target=${TESSER_TARGET:-ec2}
 
-kernels=(/boot/vmlinuz-*)
-[[ ${kernels[*]} == "/boot/vmlinuz-$(uname -r)" ]] || { echo "booted $(uname -r), image has ${kernels[*]}" >&2; exit 1; }
-echo "kernel $(uname -r)"
+if [[ $target == ec2 ]]; then
+  kernels=(/boot/vmlinuz-*)
+  [[ ${kernels[*]} == "/boot/vmlinuz-$(uname -r)" ]] || { echo "booted $(uname -r), image has ${kernels[*]}" >&2; exit 1; }
+  [[ $(findmnt -no SOURCE /) == /dev/mapper/hroot && $(dmsetup table hera) == *" era "* && $(dmsetup deps -o devname hroot) == *"(hera)"* ]] || { echo "/ is not on dm-era" >&2; exit 1; }
+else
+  [[ $(cat "/sys/dev/block/$(findmnt -no MAJ:MIN / | tr -d " ")/dm/name") == hroot ]] || { echo "/ is not on hroot" >&2; exit 1; }
+fi
+echo "kernel $(uname -r) $(uname -v)"
+[[ $(cat /sys/block/zram0/comp_algorithm) == *"[zstd]"* ]] || { echo "zram is not on zstd" >&2; exit 1; }
 
 systemctl start docker
 docker buildx version
 uv --version
 [[ $(sudo -u ubuntu -H mise settings get ruby.compile) == false ]]
+for v in 22 24; do
+  [[ $(FNM_DIR=/usr/local/fnm /usr/local/fnm/fnm exec --using "$v" node -p 'process.versions.node.split(".")[0]') == "$v" ]] || { echo "no node $v" >&2; exit 1; }
+done
+[[ $(cd / && bun -e 'console.log(6 * 7)') == 42 ]] || { echo "bun does not run" >&2; exit 1; }
+uvtmp=$(mktemp -d)
+UV_CACHE_DIR=$uvtmp uv run -q --no-project --python /usr/bin/python3 --with six python3 -c 'import six'
+rm -rf "$uvtmp"
+echo "node 22 24, bun, uv: ok"
+
+[[ $(docker info -f '{{.Driver}}') == overlay* ]] || { echo "docker is not on overlayfs" >&2; exit 1; }
+busybox=public.ecr.aws/docker/library/busybox:latest
+docker pull -q "$busybox" > /dev/null
+[[ $(docker run --rm --memory 64m "$busybox" cat /sys/fs/cgroup/memory.max) == 67108864 ]] || { echo "no memory cgroup limit" >&2; exit 1; }
+docker run --rm "$busybox" wget -q -T 20 -O /dev/null http://checkip.amazonaws.com
+docker run -d --name smoke-web -p 18080:80 "$busybox" sh -c 'echo smoke > /www && httpd -f -p 80 -h /' > /dev/null
+ip=$(ip -o route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+ok=0
+for _ in $(seq 20); do
+  [[ $(curl -fsS -m 2 "http://$ip:18080/www" 2>/dev/null) == smoke ]] && { ok=1; break; }
+  sleep 0.5
+done
+docker rm -f smoke-web > /dev/null
+((ok)) || { echo "published port on $ip does not answer" >&2; exit 1; }
+printf 'FROM %s\nRUN wget -q -T 20 -O /dev/null http://checkip.amazonaws.com && echo built > /built\n' "$busybox" |
+  docker buildx build -q --load -t smoke-build - > /dev/null
+[[ $(docker run --rm smoke-build cat /built) == built ]] || { echo "buildx build failed" >&2; exit 1; }
+echo "docker overlayfs, memory cgroup, bridge egress, published port, buildx: ok"
 
 # name, image, readiness command run inside the container
 checks=(
@@ -41,4 +76,5 @@ for check in "${checks[@]}"; do
 done
 
 docker system prune -af --volumes > /dev/null
+docker buildx prune -af > /dev/null
 exit "$failed"

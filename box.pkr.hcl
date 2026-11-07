@@ -35,7 +35,7 @@ source "amazon-ebs" "box" {
     most_recent = true
   }
 
-  instance_type = "m7a.large"
+  instance_type = "m8a.large"
   subnet_filter {
     filters = {
       "tag:Name" = "devcloud-public"
@@ -75,13 +75,13 @@ build {
   }
 
   provisioner "file" {
-    sources     = ["boot", "config", "hibernate", "shim", "verify"]
+    sources     = ["boot", "config", "hibernate", "shim", "verify", "kernel-out"]
     destination = "/tmp/tesser/"
   }
 
   provisioner "shell" {
     script           = "setup.sh"
-    environment_vars = ["TESSER_FILES=/tmp/tesser"]
+    environment_vars = ["TESSER_FILES=/tmp/tesser", "TESSER_BASE=${local.ami_name}"]
     execute_command  = "chmod +x {{ .Path }}; sudo {{ .Vars }} {{ .Path }}"
   }
 

@@ -1,0 +1,53 @@
+Subject: [PATCH] PCI/PM: skip restore of a device that is gone
+
+A hibernation image restored on another machine finds other devices at
+the BDFs it saved: nothing (all-ones), or another device. Restoring the
+saved config space into it and running its driver's restore hangs or
+loops (ENA polling all-ones, virtio-pci resetting a Nitro device). When
+the vendor/device id at the BDF is no longer the saved one, mark the
+device disconnected and skip its restore, so userspace can remove it and
+rescan for what the new machine has.
+
+--- a/drivers/pci/pci-driver.c
++++ b/drivers/pci/pci-driver.c
+@@ -1247,11 +1247,30 @@
+ 	return 0;
+ }
+ 
++static bool pci_pm_restore_gone(struct pci_dev *pci_dev)
++{
++	u32 id;
++
++	if (pci_dev_is_disconnected(pci_dev))
++		return true;
++	if (pci_dev->is_virtfn)
++		return false;
++	pci_bus_read_config_dword(pci_dev->bus, pci_dev->devfn, PCI_VENDOR_ID, &id);
++	if (id == (pci_dev->vendor | (u32)pci_dev->device << 16))
++		return false;
++	pci_info(pci_dev, "gone after restore (now %08x), disconnected\n", id);
++	pci_dev_set_disconnected(pci_dev, NULL);
++	return true;
++}
++
+ static int pci_pm_restore_noirq(struct device *dev)
+ {
+ 	struct pci_dev *pci_dev = to_pci_dev(dev);
+ 	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
+ 
++	if (pci_pm_restore_gone(pci_dev))
++		return 0;
++
+ 	pci_pm_default_resume_early(pci_dev);
+ 	pci_fixup_device(pci_fixup_resume_early, pci_dev);
+ 
+@@ -1269,6 +1288,9 @@
+ 	struct pci_dev *pci_dev = to_pci_dev(dev);
+ 	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
+ 
++	if (pci_dev_is_disconnected(pci_dev))
++		return 0;
++
+ 	/*
+ 	 * This is necessary for the hibernation error path in which restore is
+ 	 * called without restoring the standard config registers of the device.

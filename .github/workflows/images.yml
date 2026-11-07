@@ -1,0 +1,108 @@
+name: images
+
+# The tesser kernel and the fleet guest's root disk, built and smoke-tested in
+# Firecracker on the runner's KVM. build.yml publishes what this makes; a pull
+# request that touches them builds and tests them the same way, and publishes
+# nothing.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ""
+  pull_request:
+    paths:
+      - kernel/**
+      - fleet/**
+      - boot/**
+      - config/**
+      - shim/**
+      - verify/**
+      - setup.sh
+      - smoke.sh
+      - .github/workflows/images.yml
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: kernel
+        with:
+          path: kernel-out
+          key: kernel-${{ hashFiles('fleet/versions', 'kernel/**') }}
+
+      - if: steps.kernel.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          source fleet/versions
+          sudo apt-get update -q
+          sudo apt-get install -y -q dpkg-dev fakeroot
+          curl -fsSL -o /tmp/k.dsc "https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/linux-aws/$ubuntu_kernel/linux-aws_$ubuntu_kernel.dsc"
+          echo "$ubuntu_kernel_dsc_sha256  /tmp/k.dsc" | sha256sum -c --quiet
+          sudo apt-get build-dep -y -q --arch-only /tmp/k.dsc
+          sudo install -d -o "$USER" /mnt/kernel
+          start=$(date +%s)
+          # Only the archive's toolchain: the runner's own rustc on PATH turns
+          # Ubuntu's CONFIG_RUST_IS_AVAILABLE off and its config check fails.
+          PATH=/usr/sbin:/usr/bin:/sbin:/bin KERNEL_WORK=/mnt/kernel bash kernel/build.sh "$PWD/kernel-out"
+          echo "kernel build: $(( $(date +%s) - start )) s on $(nproc) vCPUs"
+
+      - run: cat kernel-out/release kernel-out/build-id && sha256sum kernel-out/vmlinux kernel-out/bzImage kernel-out/debs/*
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kernel
+          path: kernel-out
+          if-no-files-found: error
+
+  guest:
+    needs: kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: kernel
+          path: kernel-out
+
+      - name: Tools and KVM
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-utils zstd nftables
+          sudo chmod 666 /dev/kvm
+          sudo bash fleet/install-firecracker.sh /usr/local/bin
+
+      - name: Root disk
+        run: |
+          set -euo pipefail
+          work=/mnt/guest
+          sudo mkdir -p "$work"
+          sudo WORK="$work" bash fleet/guest-image.sh "$PWD/kernel-out" "$work/root.ext4"
+          sudo zstd -T0 -3 -q -o "$work/root.ext4.zst" "$work/root.ext4"
+          zstd -T0 -19 -q -o vmlinux.zst kernel-out/vmlinux
+          sudo mv "$work/root.ext4.zst" root.ext4.zst
+          sudo chown "$USER" root.ext4.zst
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guest-image
+          path: |
+            root.ext4.zst
+            vmlinux.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
