@@ -45,6 +45,7 @@ tag=tesser$(cat "$here"/patches/*.patch | sha256sum | cut -c1-12)
 rules=(do_tools=false do_zfs=false do_v4l2loopback=false)
 export DEB_BUILD_OPTIONS="parallel=$(nproc)"
 fakeroot debian/rules clean "${rules[@]}" > /dev/null
+debian/rules build-aws "${rules[@]}"
 fakeroot debian/rules binary-headers binary-aws "${rules[@]}"
 
 build=debian/build/build-aws
