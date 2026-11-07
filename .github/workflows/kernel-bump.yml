@@ -1,0 +1,92 @@
+name: kernel-bump
+
+# Watches the Ubuntu archive for the next noble linux-aws upload. Canonical's
+# stable release updates are how security fixes reach the 24.04 LTS kernel,
+# so the day one is published to noble-updates or noble-security this pins it
+# on a branch, builds and smoke-tests it the way images.yml always does, and
+# opens a pull request. Merging it is a person's call; build.yml then
+# publishes it.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: kernel-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      branch: ${{ steps.pin.outputs.branch }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LP: https://api.launchpad.net/1.0
+        run: |
+          set -euo pipefail
+          source fleet/versions
+          latest=
+          for pocket in Updates Security; do
+            for v in $(curl -fsSL --retry 3 "$LP/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name=linux-aws&exact_match=true&distro_series=$LP/ubuntu/noble&pocket=$pocket&status=Published" |
+              jq -r '.entries[].source_package_version'); do
+              if [[ -z $latest ]] || dpkg --compare-versions "$v" gt "$latest"; then latest=$v; fi
+            done
+          done
+          [[ -n $latest ]] || { echo "noble publishes no linux-aws" >&2; exit 1; }
+          if ! dpkg --compare-versions "$latest" gt "$ubuntu_kernel"; then
+            echo "pinned $ubuntu_kernel is the newest noble linux-aws"
+            exit 0
+          fi
+          branch=kernel-bump/$latest
+          if [[ $(gh pr list --head "$branch" --state all --json number --jq length) != 0 ]]; then
+            echo "a pull request for $branch exists"
+            exit 0
+          fi
+          dsc=linux-aws_$latest.dsc
+          curl -fsSL --retry 3 -o "$dsc" "https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/linux-aws/$latest/$dsc"
+          grep -qx "Version: $latest" "$dsc" || { echo "$dsc is not linux-aws $latest" >&2; exit 1; }
+          sha=$(sha256sum "$dsc" | cut -d' ' -f1)
+          rm "$dsc"
+          sed -i -e "s/^ubuntu_kernel=.*/ubuntu_kernel=$latest/" -e "s/^ubuntu_kernel_dsc_sha256=.*/ubuntu_kernel_dsc_sha256=$sha/" fleet/versions
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -qam "chore(kernel): linux-aws $latest"
+          git push -q -f origin "$branch"
+          printf 'branch=%s\nlatest=%s\nfrom=%s\n' "$branch" "$latest" "$ubuntu_kernel" >> "$GITHUB_OUTPUT"
+
+      - if: steps.pin.outputs.branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create --head "${{ steps.pin.outputs.branch }}" --title "chore(kernel): linux-aws ${{ steps.pin.outputs.latest }}" --body \
+            "Canonical published noble linux-aws ${{ steps.pin.outputs.latest }} (pinned: ${{ steps.pin.outputs.from }}). Changelog and the CVEs it fixes: https://launchpad.net/ubuntu/+source/linux-aws/${{ steps.pin.outputs.latest }}. A pull request opened by this workflow doesn't trigger images.yml, so this run builds and smoke-tests it and comments the result here."
+
+  images:
+    needs: bump
+    if: needs.bump.outputs.branch
+    uses: ./.github/workflows/images.yml
+    with:
+      ref: ${{ needs.bump.outputs.branch }}
+
+  report:
+    needs: [bump, images]
+    if: always() && needs.bump.outputs.branch
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.images.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr comment "${{ needs.bump.outputs.branch }}" -R "$GITHUB_REPOSITORY" --body "kernel build and Firecracker smoke: **$RESULT** ($RUN_URL)"

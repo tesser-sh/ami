@@ -1,9 +1,10 @@
-# Everything the fleet images fetch from outside Ubuntu, pinned by sha256.
+# Everything the images fetch from outside Ubuntu's archive, pinned by sha256,
+# and the one Ubuntu source the kernel is built from: noble's linux-aws at
+# ubuntu_kernel, its .dsc pinned by sha256 (the .dsc pins the rest).
 firecracker=v1.17.0
 firecracker_sha256=06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
-kernel=6.1.158
-kernel_sha256=ad068bfdb604ec0f4f7de385c8e7ab944008aa78a4aeeca94f53206e6726bfda
-kernel_config_sha256=153ca1b40f3312bfb40b7587b471ea548a915f98f480f0d0892a1537957a2147
+ubuntu_kernel=6.8.0-1069.74
+ubuntu_kernel_dsc_sha256=7b2f8e2d6bfc4a203cce4b30c9cde0f34acd98cb672e2cd22787febb9c2c47f2
 noble=20261017
 noble_sha256=04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94
 ssm_agent=3.3.5708.0

@@ -1,0 +1,56 @@
+Subject: [PATCH] PM: hibernate: resume an image on another machine
+
+A box hibernates on one machine and resumes on another: an EC2 m8a
+instance, a Firecracker microVM on a fleet host, or a loader kexec'd on a
+fresh m8a. The image still has to come from this exact kernel build, but
+the memory size, the e820 map and the ACPI hardware signature differ
+between those machines, so they no longer refuse the resume. Firecracker's
+memory covers the m8a's e820, and a fleet-born box reserves what an m8a
+lacks, so every page of the image has a home.
+
+--- a/kernel/power/snapshot.c
++++ b/kernel/power/snapshot.c
+@@ -2322,12 +2322,13 @@
+ 	const char *reason;
+ 
+ 	reason = check_image_kernel(info);
+-	if (!reason && info->num_physpages != get_num_physpages())
+-		reason = "memory size";
+ 	if (reason) {
+ 		pr_err("Image mismatch: %s\n", reason);
+ 		return -EPERM;
+ 	}
++	if (info->num_physpages != get_num_physpages())
++		pr_info("Image from a machine with %lu pages, this one has %lu\n",
++			info->num_physpages, get_num_physpages());
+ 	return 0;
+ }
+ 
+--- a/kernel/power/swap.c
++++ b/kernel/power/swap.c
+@@ -1605,9 +1605,8 @@
+ 		}
+ 		if (!error && swsusp_header->flags & SF_HW_SIG &&
+ 		    swsusp_header->hw_sig != swsusp_hardware_signature) {
+-			pr_info("Suspend image hardware signature mismatch (%08x now %08x); aborting resume.\n",
++			pr_info("Suspend image hardware signature mismatch (%08x now %08x)\n",
+ 				swsusp_header->hw_sig, swsusp_hardware_signature);
+-			error = -EINVAL;
+ 		}
+ 
+ put:
+--- a/arch/x86/power/hibernate.c
++++ b/arch/x86/power/hibernate.c
+@@ -143,10 +143,8 @@
+ 	jump_address_phys = rdr->jump_address_phys;
+ 	restore_cr3 = rdr->cr3;
+ 
+-	if (rdr->e820_checksum != compute_e820_crc32(e820_table_firmware)) {
+-		pr_crit("Hibernate inconsistent memory map detected!\n");
+-		return -ENODEV;
+-	}
++	if (rdr->e820_checksum != compute_e820_crc32(e820_table_firmware))
++		pr_info("Image from a machine with another memory map\n");
+ 
+ 	return 0;
+ }
