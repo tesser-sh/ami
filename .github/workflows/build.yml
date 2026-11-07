@@ -91,6 +91,11 @@ jobs:
   images:
     needs: check
     uses: ./.github/workflows/images.yml
+    permissions:
+      contents: read
+      id-token: write
+    secrets:
+      RUNNER_ADMIN_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
 
   # The guest image, published under images/build-<run id>/ to the images
   # bucket in each region, which hosts read with credentials the cell gives

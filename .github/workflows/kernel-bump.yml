@@ -76,8 +76,13 @@ jobs:
     needs: bump
     if: needs.bump.outputs.branch
     uses: ./.github/workflows/images.yml
+    permissions:
+      contents: read
+      id-token: write
     with:
       ref: ${{ needs.bump.outputs.branch }}
+    secrets:
+      RUNNER_ADMIN_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
 
   report:
     needs: [bump, images]

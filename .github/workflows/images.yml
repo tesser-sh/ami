@@ -10,6 +10,9 @@ on:
       ref:
         type: string
         default: ""
+    secrets:
+      RUNNER_ADMIN_TOKEN:
+        required: true
   pull_request:
     paths:
       - kernel/**
@@ -25,10 +28,74 @@ on:
 permissions:
   contents: read
 
+env:
+  RUNNER_INSTANCE_TYPE: c7a.8xlarge
+
 jobs:
-  kernel:
+  # The kernel builds on a spot instance of our own that runs this one job as
+  # a just-in-time runner and terminates itself after it. A fork's pull
+  # request gets neither the OIDC token nor the secret, so it gets no runner
+  # and no kernel build.
+  runner:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      label: ${{ steps.launch.outputs.label }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::131798513069:role/tesser-kernel-runner
+          aws-region: us-west-2
+
+      - id: launch
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          label=kernel-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
+          config=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runners/generate-jitconfig" -f name="$label" -F runner_group_id=1 -f "labels[]=$label" -f work_folder=_work --jq .encoded_jit_config)
+          echo "::add-mask::$config"
+          subnet=$(aws ec2 describe-subnets --filters Name=tag:Name,Values=devcloud-public --query 'Subnets[0].SubnetId' --output text)
+          sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=tesser-kernel-runner --query 'SecurityGroups[0].GroupId' --output text)
+          {
+            printf '#!/bin/bash\nconfig=%s\n' "$config"
+            cat <<'EOF'
+          set -euo pipefail
+          trap 'shutdown -h now' EXIT
+          shutdown -h +90
+          echo 'DPkg::Lock::Timeout "600";' > /etc/apt/apt.conf.d/90-lock-timeout
+          mkdir /opt/runner
+          curl -fsSL -o /tmp/runner.tgz https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz
+          echo "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40  /tmp/runner.tgz" | sha256sum -c --quiet
+          tar -xzf /tmp/runner.tgz -C /opt/runner
+          /opt/runner/bin/installdependencies.sh
+          chown -R ubuntu: /opt/runner
+          sudo -iu ubuntu /opt/runner/run.sh --jitconfig "$config"
+          EOF
+          } > "$RUNNER_TEMP/user-data"
+          tags="{Key=Name,Value=tesser-kernel-runner-$label},{Key=tesser:role,Value=kernel-runner},{Key=tesser:runner,Value=$label},{Key=tesser:overnight,Value=1}"
+          aws ec2 run-instances \
+            --instance-type "$RUNNER_INSTANCE_TYPE" \
+            --image-id resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
+            --subnet-id "$subnet" \
+            --security-group-ids "$sg" \
+            --instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}' \
+            --instance-initiated-shutdown-behavior terminate \
+            --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=150,VolumeType=gp3,Iops=6000,Throughput=500,DeleteOnTermination=true}' \
+            --metadata-options HttpTokens=required \
+            --user-data "file://$RUNNER_TEMP/user-data" \
+            --tag-specifications "ResourceType=instance,Tags=[$tags]" "ResourceType=volume,Tags=[$tags]" \
+            --query 'Instances[0].InstanceId' --output text
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+  kernel:
+    needs: runner
+    runs-on: ${{ needs.runner.outputs.label }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -49,11 +116,8 @@ jobs:
           curl -fsSL -o /tmp/k.dsc "https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/linux-aws/$ubuntu_kernel/linux-aws_$ubuntu_kernel.dsc"
           echo "$ubuntu_kernel_dsc_sha256  /tmp/k.dsc" | sha256sum -c --quiet
           sudo apt-get build-dep -y -q --arch-only /tmp/k.dsc
-          sudo install -d -o "$USER" /mnt/kernel
           start=$(date +%s)
-          # Only the archive's toolchain: the runner's own rustc on PATH turns
-          # Ubuntu's CONFIG_RUST_IS_AVAILABLE off and its config check fails.
-          PATH=/usr/sbin:/usr/bin:/sbin:/bin KERNEL_WORK=/mnt/kernel bash kernel/build.sh "$PWD/kernel-out"
+          bash kernel/build.sh "$PWD/kernel-out"
           echo "kernel build: $(( $(date +%s) - start )) s on $(nproc) vCPUs"
 
       - run: cat kernel-out/release kernel-out/build-id && sha256sum kernel-out/vmlinux kernel-out/bzImage kernel-out/debs/*
@@ -63,6 +127,25 @@ jobs:
           name: kernel
           path: kernel-out
           if-no-files-found: error
+
+  runner-cleanup:
+    needs: [runner, kernel]
+    if: always() && needs.runner.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::131798513069:role/tesser-kernel-runner
+          aws-region: us-west-2
+
+      - run: |
+          set -euo pipefail
+          read -ra ids <<< "$(aws ec2 describe-instances --filters "Name=tag:tesser:runner,Values=kernel-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" Name=instance-state-name,Values=pending,running,stopping,stopped --query 'Reservations[].Instances[].InstanceId' --output text)"
+          if (( ${#ids[@]} )); then aws ec2 terminate-instances --instance-ids "${ids[@]}" --output text; fi
 
   guest:
     needs: kernel
