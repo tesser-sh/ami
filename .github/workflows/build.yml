@@ -112,7 +112,7 @@ jobs:
       - run: |
           set -euo pipefail
           jq -n --arg id "$IMAGE_ID" --arg root "$(sha256sum root.ext4.zst | cut -d' ' -f1)" --arg kernel "$(sha256sum vmlinux.zst | cut -d' ' -f1)" \
-            '{id: $id, root: $root, kernel: $kernel}' > guest.json
+            '{id: $id, root: $root, kernel: $kernel, dmInit: true}' > guest.json
           cat guest.json
 
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
