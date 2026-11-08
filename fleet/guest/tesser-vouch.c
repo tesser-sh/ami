@@ -1,11 +1,18 @@
 #include <stdio.h>
 #include <sys/socket.h>
-#include <linux/vm_sockets.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+struct sockaddr_vm {
+  sa_family_t svm_family;
+  unsigned short svm_reserved1;
+  unsigned int svm_port, svm_cid;
+  unsigned char svm_flags, svm_zero[3];
+};
+_Static_assert(sizeof(struct sockaddr_vm) == 16, "sockaddr_vm is 16 bytes");
+
 int main(void) {
-  struct sockaddr_vm host = {.svm_family = AF_VSOCK, .svm_cid = VMADDR_CID_HOST, .svm_port = 1025};
+  struct sockaddr_vm host = {.svm_family = AF_VSOCK, .svm_cid = 2, .svm_port = 1025};
   struct timeval wait = {.tv_sec = 5};
   static char out[16385];
   size_t len = 0;
