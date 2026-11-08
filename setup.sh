@@ -197,7 +197,8 @@ else
   guest=$files/fleet/guest
   install -m 755 "$guest/tesser-hostkeys" /usr/local/sbin/tesser-hostkeys
   install -m 755 "$guest/tesser-resumed" /usr/local/sbin/tesser-resumed
-  install -m 755 "$guest/tesser-vouch" /usr/local/sbin/tesser-vouch
+  apt-get install -y musl-tools
+  musl-gcc -Os -static -s -o /usr/local/sbin/tesser-vouch "$guest/tesser-vouch.c"
   for unit in ssh-hostkeys.service tesser-template.service tesser-vsock.socket tesser-vsock@.service; do
     install -m 644 "$guest/$unit" "/etc/systemd/system/$unit"
   done
