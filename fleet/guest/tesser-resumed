@@ -1,9 +1,9 @@
 #!/bin/bash
 # The host's line into the guest, on vsock port 1024: one command per
 # connection. resumed: the clock jumped over a snapshot, boxd re-syncs.
-# ready: a template has settled. personalize: a box restored from a template
-# takes its own address, entropy, machine id, ssh host keys, and boots as a
-# box.
+# ready: a template has settled. keys: a box restored from a template takes
+# its owner's ssh keys before boxd is up. personalize: it takes its own
+# address, entropy, machine id, ssh host keys, and boots as a box.
 # A box reads its template's memory from its host's page cache and its own
 # disk cold, so a template caches what a box runs right after personalize.
 warm() {
@@ -26,6 +26,12 @@ case "$cmd" in
     systemctl is-system-running --wait >/dev/null 2>&1 || true
     warm > /dev/null 2>&1
     sync
+    echo ok ;;
+  keys)
+    [ -e /run/tesser/template ] || { echo "not a template"; exit 0; }
+    keys=$(base64 -d <<< "$arg") || { echo "bad keys"; exit 0; }
+    install -d -o ubuntu -g ubuntu -m 700 /home/ubuntu/.ssh
+    printf '%s\n' "$keys" | install -o ubuntu -g ubuntu -m 600 /dev/stdin /home/ubuntu/.ssh/authorized_keys
     echo ok ;;
   personalize)
     [ -e /run/tesser/template ] || { echo "not a template"; exit 0; }
