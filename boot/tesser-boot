@@ -59,4 +59,4 @@ install -d -o "$owner" -g "$group" -m 755 "$opt"
 install -o "$owner" -g "$group" -m 644 "$dl/boxd.js" "$opt/boxd.js"
 install -d -m 755 "$etc"
 install -o "$owner" -g "$group" -m 600 "$dl/boxd.json" "$etc/boxd.json"
-systemctl enable --now --no-block tesser-boxd
+systemctl enable --now --no-block --no-reload tesser-boxd

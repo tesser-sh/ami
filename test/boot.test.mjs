@@ -143,7 +143,7 @@ test("a signed bundle installs, the user-data becomes boxd's config, and boxd st
     privateIp: "10.0.1.5",
     vpcCidrs: ["10.0.0.0/16", "100.64.0.0/20"],
   });
-  assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block tesser-boxd\n");
+  assert.equal(readFileSync(run.systemctl, "utf8"), "enable --now --no-block --no-reload tesser-boxd\n");
 });
 
 test("a control plane that still sends a box token gets it passed through", async () => {
