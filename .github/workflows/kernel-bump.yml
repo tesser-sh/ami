@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   bump:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     outputs:
       branch: ${{ steps.pin.outputs.branch }}
@@ -82,7 +82,7 @@ jobs:
   report:
     needs: [bump, images]
     if: always() && needs.bump.outputs.branch
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}

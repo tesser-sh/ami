@@ -22,8 +22,12 @@ url=https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/linux-aws/$ubuntu
 dsc=linux-aws_$ubuntu_kernel.dsc
 curl -fsSL --retry 3 -o "$dsc" "$url/$dsc"
 echo "$ubuntu_kernel_dsc_sha256  $dsc" | sha256sum -c --quiet
+# Launchpad's librarian serves the 230 MB orig tarball at a few hundred KB/s;
+# the archive pool has the same files until a newer upload supersedes them.
+# dpkg-source checks every file against the .dsc's sha256s either way.
+pool=http://archive.ubuntu.com/ubuntu/pool/main/l/linux-aws
 for f in $(awk '/^Checksums-Sha256:/ { s = 1; next } /^[^ ]/ { s = 0 } s { print $3 }' "$dsc"); do
-  curl -fsSL --retry 3 -o "$f" "$url/$f"
+  curl -fsSL --retry 3 -o "$f" "$pool/$f" || curl -fsSL --retry 3 -o "$f" "$url/$f"
 done
 dpkg-source -x "$dsc" src > /dev/null
 cd src
