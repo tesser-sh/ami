@@ -32,10 +32,13 @@ curl -fsSL -o "$work/noble.img" "https://cloud-images.ubuntu.com/releases/noble/
 echo "$noble_sha256  $work/noble.img" | sha256sum -c --quiet
 echo "guest-image: base noble release-$noble $noble_sha256"
 qemu-img convert -O raw "$work/noble.img" "$work/noble.raw"
-loop=$(losetup -fP --show "$work/noble.raw")
+# By offset, not losetup -P: a kernel without GPT support (Blacksmith's
+# runners) scans the protective MBR and makes p1 the whole disk.
+read -r start sectors < <(partx -g -o START,SECTORS -n 1 "$work/noble.raw")
+loop=$(losetup -f --show -r -o $((start * 512)) --sizelimit $((sectors * 512)) "$work/noble.raw")
 truncate -s 40G "$work/root.ext4"
 mkfs.ext4 -F -q -L rootfs "$work/root.ext4"
-mount -o ro "${loop}p1" "$work/src"
+mount -o ro "$loop" "$work/src"
 mount -o loop "$work/root.ext4" "$mnt"
 cp -a "$work/src/." "$mnt/"
 umount "$work/src"
