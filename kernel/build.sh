@@ -7,8 +7,9 @@
 # the modules from the same .debs on the guest's disk.
 # A hibernation image resumes only under the same build, and two builds of
 # this script are never the same build (module signing keys are made per
-# build), so every artifact comes from one run of it, and uname -v carries the
-# patches' hash and the build's own timestamp.
+# build), so every artifact comes from one run of it. uname -v carries the
+# patches' hash and Ubuntu's upload date, so a rebuild of the same inputs has
+# the same banner but is still another build.
 # usage: build.sh <out dir>
 set -euo pipefail
 out=$(realpath -m "${1:?out dir}")
@@ -34,12 +35,15 @@ cd src
 
 for p in "$here"/patches/*.patch; do patch -p1 -s < "$p"; done
 tag=tesser$(cat "$here"/patches/*.patch | sha256sum | cut -c1-12)
+date=$(dpkg-parsechangelog -l debian.aws/changelog -S Date)
 {
   printf 'linux-aws (%s+%s) noble; urgency=medium\n\n  * kernel/patches from github.com/tesser-sh/ami\n\n' "$ubuntu_kernel" "$tag"
-  printf ' -- tesser <kernel@tesser.sh>  %s\n\n' "$(dpkg-parsechangelog -l debian.aws/changelog -S Date)"
+  printf ' -- tesser <kernel@tesser.sh>  %s\n\n' "$date"
   cat debian.aws/changelog
 } > changelog && mv changelog debian.aws/changelog
 
+KBUILD_BUILD_TIMESTAMP=$(LC_ALL=C date -u -d "$date")
+export KBUILD_BUILD_TIMESTAMP KBUILD_BUILD_USER=tesser KBUILD_BUILD_HOST=tesser.sh
 rules=(do_tools=false do_zfs=false do_v4l2loopback=false)
 export DEB_BUILD_OPTIONS="parallel=$(nproc)"
 fakeroot debian/rules clean "${rules[@]}" > /dev/null

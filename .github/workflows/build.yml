@@ -149,6 +149,19 @@ jobs:
         with:
           path: built
 
+      # Before anything ships on it, so the next build reuses this kernel.
+      - name: Kernel release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          key=$(cat built/kernel/key)
+          if ! gh release view "kernel-$key" > /dev/null; then
+            tar -C built -cf kernel-out.tar --transform 's,^kernel,kernel-out,' kernel
+            gh release create "kernel-$key" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "kernel $key" --notes "$(cat built/kernel/release)" kernel-out.tar
+          fi
+
       - name: amis.json and fleet.json
         run: |
           set -euo pipefail

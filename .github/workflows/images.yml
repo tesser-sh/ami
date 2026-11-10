@@ -34,13 +34,29 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        id: kernel
-        with:
-          path: kernel-out
-          key: kernel-${{ hashFiles('fleet/versions', 'kernel/**') }}
+      # A kernel is built once per input hash and kept as the kernel-<hash>
+      # release (build.yml publishes it): a box's hibernation image resumes only
+      # under the same build, so a rebuild of the same source strands every box.
+      - id: kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          key=$({ grep -E '^ubuntu_kernel(_dsc_sha256)?=' fleet/versions; git ls-files -s kernel; } | sha256sum | cut -c1-16)
+          url=https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/kernel-$key
+          status=$(curl -sS --retry 3 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" "$url")
+          case $status in
+            200)
+              gh release download "kernel-$key" -R "$GITHUB_REPOSITORY" -p kernel-out.tar
+              tar -xf kernel-out.tar && rm kernel-out.tar
+              echo "kernel-$key: reusing $(cat kernel-out/release)"
+              echo "hit=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "kernel-$key: no release, building" ;;
+            *) echo "kernel-$key: GitHub answered $status" >&2; exit 1 ;;
+          esac
+          echo "key=$key" >> "$GITHUB_OUTPUT"
 
-      - if: steps.kernel.outputs.cache-hit != 'true'
+      - if: steps.kernel.outputs.hit != 'true'
         run: |
           set -euo pipefail
           source fleet/versions
@@ -55,6 +71,7 @@ jobs:
           # Ubuntu's CONFIG_RUST_IS_AVAILABLE off and its config check fails.
           PATH=/usr/sbin:/usr/bin:/sbin:/bin KERNEL_WORK=/mnt/kernel bash kernel/build.sh "$PWD/kernel-out"
           echo "kernel build: $(( $(date +%s) - start )) s on $(nproc) vCPUs"
+          echo "${{ steps.kernel.outputs.key }}" > kernel-out/key
 
       - run: cat kernel-out/release kernel-out/build-id && sha256sum kernel-out/vmlinux kernel-out/bzImage kernel-out/debs/*
 
