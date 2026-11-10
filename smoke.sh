@@ -10,6 +10,7 @@ if [[ $target == ec2 ]]; then
   kernels=(/boot/vmlinuz-*)
   [[ ${kernels[*]} == "/boot/vmlinuz-$(uname -r)" ]] || { echo "booted $(uname -r), image has ${kernels[*]}" >&2; exit 1; }
   [[ $(findmnt -no SOURCE /) == /dev/mapper/hroot && $(dmsetup table hera) == *" era "* && $(dmsetup deps -o devname hroot) == *"(hera)"* ]] || { echo "/ is not on dm-era" >&2; exit 1; }
+  [[ $(cat /proc/cmdline) == *console=ttyS0* && $(cat /proc/cmdline) != *console=tty1* && ! -s /proc/fb ]] || { echo "a box has no framebuffer and logs to the serial console only: $(cat /proc/fb) $(cat /proc/cmdline)" >&2; exit 1; }
 else
   [[ $(cat "/sys/dev/block/$(findmnt -no MAJ:MIN / | tr -d " ")/dm/name") == hroot ]] || { echo "/ is not on hroot" >&2; exit 1; }
 fi
