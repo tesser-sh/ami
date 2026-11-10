@@ -159,12 +159,17 @@ if [[ $target == ec2 ]]; then
   # slots a move target's root, swap, home and NIC appear on (tesser's
   # MOVE_SLOTS: Firecracker numbers them by attach order from IRQ 5 and
   # 0xc0001000). IRQ 5 (level-triggered on Nitro, edge in Firecracker), 8 (rtc0)
-  # and 9 (acpi) are dummy disks the box never names.
+  # and 9 (acpi) are dummy disks the box never names. No framebuffer console,
+  # and kernel messages on the serial console only: after a move the boot
+  # framebuffer is no longer backed, and one fbcon redraw into it (simpledrm's
+  # memcpy_toio) holds a CPU for ~21 s in the middle of the move.
   install -m 755 "$files/boot/09_tesser" /etc/grub.d/09_tesser
   chmod -x /etc/grub.d/10_linux /etc/grub.d/10_linux_zfs /etc/grub.d/20_linux_xen /etc/grub.d/30_os-prober
   rm -f /etc/default/grub.d/40-force-partuuid.cfg
+  grep -q 'console=tty1 ' /etc/default/grub.d/50-cloudimg-settings.cfg
+  sed -i 's/console=tty1 //' /etc/default/grub.d/50-cloudimg-settings.cfg
   mmio=" virtio_mmio.device=4K@0xc0002000:6 virtio_mmio.device=4K@0xc0003000:7 virtio_mmio.device=4K@0xc0006000:10 virtio_mmio.device=4K@0xc0007000:11"
-  echo "GRUB_CMDLINE_LINUX=\"root=/dev/mapper/hroot panic=-1 efi=noruntime lapic=notscdeadline idle=halt nmi_watchdog=0 clearcpuid=aperfmperf,monitor$mmio tesser.root=PARTUUID=$(blkid -s PARTUUID -o value "$root")\"" > /etc/default/grub.d/95-tesser.cfg
+  echo "GRUB_CMDLINE_LINUX=\"root=/dev/mapper/hroot panic=-1 efi=noruntime lapic=notscdeadline idle=halt nmi_watchdog=0 clearcpuid=aperfmperf,monitor initcall_blacklist=simpledrm_platform_driver_init$mmio tesser.root=PARTUUID=$(blkid -s PARTUUID -o value "$root")\"" > /etc/default/grub.d/95-tesser.cfg
   update-grub
 
   # What breaks when a box's disks and NIC go away and come back elsewhere:
