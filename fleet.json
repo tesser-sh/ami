@@ -1,12 +1,12 @@
 {
   "hostAmis": {
-    "us-east-1": "ami-0fb7366de86776810",
-    "us-west-2": "ami-0fa93f5b49785c5c1"
+    "us-east-1": "ami-0035a6284cf837f2e",
+    "us-west-2": "ami-0b22a722852953e46"
   },
   "image": {
-    "id": "build-42788327455",
-    "root": "af5df9e5f0c2bff1787997f8f60e40e27aa722d07bfbcb668dc3d2afcda0a1be",
-    "kernel": "7288ca67777000a59c1c3e46b0f8d5bae5dcacc193a8a2a73f5992c7d4c946a7",
+    "id": "build-42854883730",
+    "root": "62467527cc1bfeb5eb5d231e198eb03c7d25af2585cda17d882eb97b4e482765",
+    "kernel": "8b028619996ab63b46625fd3b8b9963f8ab75f1a75201d4b9b3ee387482be406",
     "dmInit": true
   },
   "imagesBuckets": {
