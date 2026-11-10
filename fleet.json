@@ -1,11 +1,11 @@
 {
   "hostAmis": {
-    "us-east-1": "ami-01de057816a5eff38",
-    "us-west-2": "ami-02c597b3542b55a7e"
+    "us-east-1": "ami-0e7401cb5ab1c4894",
+    "us-west-2": "ami-096718627442d0b07"
   },
   "image": {
-    "id": "build-42682753191",
-    "root": "e4e35164fe24098cd0714e64d8d500a7142b4c686cda296c884885c193348388",
+    "id": "build-42767158053",
+    "root": "c819c0ff6b58215a6485bc416c69f914c03f95e6c1f3a4142fa564b357317c83",
     "kernel": "10667cefd662355aa62603c2b455d283800c5f15e18d02439981dae21d91197c",
     "dmInit": true
   },
