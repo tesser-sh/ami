@@ -1,6 +1,7 @@
 #!/bin/bash
 # The host's line into the guest, on vsock port 1024: one command per
 # connection. resumed: the clock jumped over a snapshot, boxd re-syncs.
+# sync: the host is about to snapshot the box; flush the page cache first.
 # ready: a template has settled. keys: a box restored from a template takes
 # its owner's ssh keys before boxd is up. personalize: it takes its own
 # address, entropy, machine id, ssh host keys, and boots as a box.
@@ -49,6 +50,9 @@ case "$cmd" in
     /usr/local/sbin/tesser-hostkeys
     rm /run/tesser/template
     systemctl start --no-block tesser-boot
+    echo ok ;;
+  sync)
+    sync
     echo ok ;;
   ping) echo pong ;;
 esac
