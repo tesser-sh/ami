@@ -1,0 +1,514 @@
+Subject: [PATCH] PM: hibernate: read frozen tasks' anonymous memory in place
+
+SNAPSHOT_INPLACE (after SNAPSHOT_FREEZE) marks the anonymous pages of every
+address space whose users are all frozen tasks, and takes a reference on each
+folio it marks. The atomic copy skips them and snapshot_read_next() hands them
+out from where they are, so making an image needs free memory only for the
+kernel, page cache and other non-anonymous pages. The image format is
+unchanged; the restoring kernel needs nothing new.
+
+What is never read in place, and is copied as before:
+- an address space with a task that is not frozen (an OOM victim, an
+  io_uring or vhost worker that did not freeze), a kernel thread using it,
+  or an mmu notifier (KVM, RDMA ODP, HMM, SVA: secondary MMUs that write
+  without holding a page reference);
+- a folio holding any reference besides its mappings and the swap cache:
+  a DMA or GUP pin (io_uring fixed buffers, O_DIRECT in flight, RDMA,
+  AF_XDP, vfio), a GUP get, one isolated by reclaim or migration;
+- KSM, hugetlb, zone-device, hwpoisoned pages, VM_IO and VM_PFNMAP mappings.
+
+A kernel thread that takes up an address space (kthread_use_mm) while pages
+are held in place may write one, so from then on reading the image fails
+with -EIO and the caller thaws instead of sending a torn image.
+
+In place, preallocation never shrinks memory and allocates without I/O:
+shrinking would write the marked pages to swap without freeing them, and the
+caller may already have suspended the swap device. An image that doesn't fit
+in free memory fails with -ENOMEM instead. SNAPSHOT_UNFREEZE, SNAPSHOT_FREE,
+closing the device and every swsusp_free() outside the atomic section drop
+the references; the resumed kernel drops its copy of them the same way.
+
+--- a/include/linux/suspend.h
++++ b/include/linux/suspend.h
+@@ -450,6 +450,7 @@
+ asmlinkage int swsusp_save(void);
+ extern struct pbe *restore_pblist;
+ int pfn_is_nosave(unsigned long pfn);
++extern bool hibernate_inplace_held, hibernate_inplace_torn;
+ 
+ int hibernate_quiet_exec(int (*func)(void *data), void *data);
+ int hibernate_resume_nonboot_cpu_disable(void);
+--- a/include/uapi/linux/suspend_ioctls.h
++++ b/include/uapi/linux/suspend_ioctls.h
+@@ -29,6 +29,7 @@
+ #define SNAPSHOT_PREF_IMAGE_SIZE	_IO(SNAPSHOT_IOC_MAGIC, 18)
+ #define SNAPSHOT_AVAIL_SWAP_SIZE	_IOR(SNAPSHOT_IOC_MAGIC, 19, __kernel_loff_t)
+ #define SNAPSHOT_ALLOC_SWAP_PAGE	_IOR(SNAPSHOT_IOC_MAGIC, 20, __kernel_loff_t)
+-#define SNAPSHOT_IOC_MAXNR	20
++#define SNAPSHOT_INPLACE		_IOR(SNAPSHOT_IOC_MAGIC, 21, __kernel_loff_t)
++#define SNAPSHOT_IOC_MAXNR	21
+ 
+ #endif /* _LINUX_SUSPEND_IOCTLS_H */
+--- a/kernel/kthread.c
++++ b/kernel/kthread.c
+@@ -28,6 +28,7 @@
+ #include <linux/uaccess.h>
+ #include <linux/numa.h>
+ #include <linux/sched/isolation.h>
++#include <linux/suspend.h>
+ #include <trace/events/sched.h>
+ 
+ 
+@@ -1472,6 +1473,18 @@
+ 	switch_mm_irqs_off(active_mm, mm, tsk);
+ 	local_irq_enable();
+ 	task_unlock(tsk);
++#ifdef CONFIG_HIBERNATION
++	/*
++	 * A hibernation image is reading frozen tasks' memory in place, and
++	 * this thread may write some of it: the image can't be trusted. Checked
++	 * after tsk->mm is set under task_lock, which the marking also takes.
++	 */
++	if (unlikely(READ_ONCE(hibernate_inplace_held))) {
++		pr_warn_once("hibernation: %s uses an address space while memory is read in place\n", tsk->comm);
++		WRITE_ONCE(hibernate_inplace_torn, true);
++		smp_mb();
++	}
++#endif
+ #ifdef finish_arch_post_lock_switch
+ 	finish_arch_post_lock_switch();
+ #endif
+--- a/kernel/power/power.h
++++ b/kernel/power/power.h
+@@ -106,6 +106,8 @@
+ extern int create_basic_memory_bitmaps(void);
+ extern void free_basic_memory_bitmaps(void);
+ extern int hibernate_preallocate_memory(void);
++extern long hibernate_mark_inplace(void);
++extern void hibernate_release_inplace(void);
+ 
+ extern void clear_or_poison_free_pages(void);
+ 
+--- a/kernel/power/snapshot.c
++++ b/kernel/power/snapshot.c
+@@ -31,6 +31,13 @@
+ #include <linux/compiler.h>
+ #include <linux/ktime.h>
+ #include <linux/set_memory.h>
++#include <linux/freezer.h>
++#include <linux/mmu_notifier.h>
++#include <linux/pagewalk.h>
++#include <linux/sched/mm.h>
++#include <linux/sched/stat.h>
++#include <linux/swap.h>
++#include <linux/vmalloc.h>
+ 
+ #include <linux/uaccess.h>
+ #include <asm/mmu_context.h>
+@@ -1411,6 +1418,218 @@
+ 	return page;
+ }
+ 
++/*
++ * Pages read from where they are: the anonymous memory of address spaces whose
++ * every user is a frozen task. Nothing writes such a page until the image has
++ * been read: its owners can't run, no kernel thread has the mm, and a page is
++ * only taken when its references are exactly its mappings (plus the swap
++ * cache), so nobody holds it for I/O, a pin or a GUP write. The reference taken
++ * on it keeps reclaim, compaction, migration, khugepaged and KSM from freeing,
++ * moving or merging it. The snapshot doesn't copy these pages, so making an
++ * image needs free memory only for everything else. The maps are ordinary
++ * kernel memory, so they are in the image too, and the resumed kernel drops
++ * the same references in swsusp_free().
++ */
++static unsigned long *inplace_map, *inplace_held;
++static unsigned long inplace_max, nr_inplace, nr_inplace_image;
++bool hibernate_inplace_held, hibernate_inplace_torn;
++
++static inline bool page_inplace(unsigned long pfn)
++{
++	return inplace_map && pfn < inplace_max && test_bit(pfn, inplace_map);
++}
++
++static bool inplace_folio_ok(struct folio *folio)
++{
++	int expected;
++
++	if (!folio_test_anon(folio) || folio_test_ksm(folio) ||
++	    folio_test_hugetlb(folio) || folio_is_zone_device(folio) ||
++	    folio_test_highmem(folio))
++		return false;
++	expected = folio_mapcount(folio);
++	if (folio_test_swapcache(folio))
++		expected += folio_nr_pages(folio);
++	return folio_ref_count(folio) == expected;
++}
++
++static void inplace_mark(struct page *page)
++{
++	struct folio *folio = page_folio(page);
++	unsigned long pfn = page_to_pfn(page), head = folio_pfn(folio);
++
++	if (pfn >= inplace_max || head >= inplace_max || PageHWPoison(page) ||
++	    test_bit(pfn, inplace_map))
++		return;
++	if (!test_bit(head, inplace_held)) {
++		if (!inplace_folio_ok(folio))
++			return;
++		folio_get(folio);
++		__set_bit(head, inplace_held);
++	}
++	__set_bit(pfn, inplace_map);
++	nr_inplace++;
++}
++
++static int inplace_pmd(pmd_t *pmd, unsigned long addr, unsigned long end,
++		       struct mm_walk *walk)
++{
++	struct vm_area_struct *vma = walk->vma;
++	pte_t *start, *pte;
++	spinlock_t *ptl;
++
++	walk->action = ACTION_CONTINUE;
++	ptl = pmd_trans_huge_lock(pmd, vma);
++	if (ptl) {
++		pmd_t pmdv = *pmd;
++		struct page *page = pmd_present(pmdv) ?
++			vm_normal_page_pmd(vma, addr & HPAGE_PMD_MASK, pmdv) : NULL;
++
++		if (page)
++			for (page += (addr & ~HPAGE_PMD_MASK) >> PAGE_SHIFT;
++			     addr < end; addr += PAGE_SIZE, page++)
++				inplace_mark(page);
++		spin_unlock(ptl);
++		return 0;
++	}
++	start = pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
++	if (!pte) {
++		walk->action = ACTION_AGAIN;
++		return 0;
++	}
++	for (; addr < end; pte++, addr += PAGE_SIZE) {
++		pte_t ptent = ptep_get(pte);
++		struct page *page;
++
++		if (!pte_present(ptent))
++			continue;
++		page = vm_normal_page(vma, addr, ptent);
++		if (page)
++			inplace_mark(page);
++	}
++	pte_unmap_unlock(start, ptl);
++	return 0;
++}
++
++static int inplace_test(unsigned long start, unsigned long end, struct mm_walk *walk)
++{
++	return walk->vma->vm_flags & (VM_IO | VM_PFNMAP) ? 1 : 0;
++}
++
++static const struct mm_walk_ops inplace_ops = {
++	.pmd_entry = inplace_pmd,
++	.test_walk = inplace_test,
++	.walk_lock = PGWALK_RDLOCK,
++};
++
++/**
++ * hibernate_release_inplace - Drop the references the in-place pages hold.
++ */
++void hibernate_release_inplace(void)
++{
++	unsigned long pfn;
++
++	if (irqs_disabled())
++		return;
++	WRITE_ONCE(hibernate_inplace_held, false);
++	if (inplace_held)
++		for_each_set_bit(pfn, inplace_held, inplace_max)
++			folio_put(page_folio(pfn_to_page(pfn)));
++	vfree(inplace_held);
++	vfree(inplace_map);
++	inplace_held = NULL;
++	inplace_map = NULL;
++	nr_inplace = 0;
++	nr_inplace_image = 0;
++}
++
++struct inplace_mm {
++	struct mm_struct *mm;
++	bool skip;
++};
++
++/**
++ * hibernate_mark_inplace - Leave frozen tasks' anonymous memory out of the copy.
++ *
++ * Called with user space frozen, by the one task that is not. An address
++ * space is read in place only if every task using it is frozen and none of
++ * them is a kernel thread (kthread_use_mm: vhost, io_uring of old, drivers);
++ * any other is copied as before. Returns the number of pages the image will
++ * read from where they are.
++ */
++long hibernate_mark_inplace(void)
++{
++	struct task_struct *g, *t;
++	struct inplace_mm *mms;
++	unsigned long n = 0, cap, i, walked = 0, skipped = 0, busy = 0;
++	bool overflow = false;
++	ktime_t start = ktime_get();
++
++	hibernate_release_inplace();
++	lru_add_drain_all();
++	inplace_max = max_pfn;
++	inplace_map = vzalloc(BITS_TO_LONGS(inplace_max) * sizeof(long));
++	inplace_held = vzalloc(BITS_TO_LONGS(inplace_max) * sizeof(long));
++	cap = nr_threads + 64;
++	mms = kvcalloc(cap, sizeof(*mms), GFP_KERNEL);
++	if (!inplace_map || !inplace_held || !mms) {
++		kvfree(mms);
++		hibernate_release_inplace();
++		return -ENOMEM;
++	}
++	WRITE_ONCE(hibernate_inplace_torn, false);
++	WRITE_ONCE(hibernate_inplace_held, true);
++	read_lock(&tasklist_lock);
++	for_each_process_thread(g, t) {
++		struct mm_struct *mm;
++		bool ok;
++
++		task_lock(t);
++		mm = t->mm;
++		ok = !(t->flags & PF_KTHREAD) && frozen(t);
++		if (mm && mm != current->mm) {
++			ok = ok && !mm_has_notifiers(mm);
++			for (i = n; i > 0 && mms[i - 1].mm != mm; i--)
++				;
++			if (i > 0) {
++				mms[i - 1].skip |= !ok;
++			} else if (n == cap) {
++				overflow = true;
++			} else if (mmget_not_zero(mm)) {
++				mms[n].mm = mm;
++				mms[n++].skip = !ok;
++			}
++		}
++		task_unlock(t);
++		if (overflow)
++			break;
++	}
++	read_unlock(&tasklist_lock);
++	for (i = 0; i < n; i++) {
++		int tries;
++
++		if (overflow || mms[i].skip) {
++			skipped++;
++		} else {
++			for (tries = 0; tries < 50 && !mmap_read_trylock(mms[i].mm); tries++)
++				msleep(1);
++			if (tries < 50) {
++				walk_page_range(mms[i].mm, 0, mms[i].mm->task_size, &inplace_ops, NULL);
++				mmap_read_unlock(mms[i].mm);
++				walked++;
++			} else {
++				busy++;
++			}
++		}
++		mmput(mms[i].mm);
++	}
++	kvfree(mms);
++	pr_info("%lu pages in place, from %lu address spaces (%lu with a task not frozen, %lu busy%s), marked in %lld ms\n",
++		nr_inplace, walked, skipped, busy, overflow ? ", too many tasks" : "",
++		ktime_ms_delta(ktime_get(), start));
++	return nr_inplace;
++}
++
+ /**
+  * count_data_pages - Compute the total number of saveable non-highmem pages.
+  */
+@@ -1427,7 +1646,7 @@
+ 		mark_free_pages(zone);
+ 		max_zone_pfn = zone_end_pfn(zone);
+ 		for (pfn = zone->zone_start_pfn; pfn < max_zone_pfn; pfn++)
+-			if (saveable_page(zone, pfn))
++			if (saveable_page(zone, pfn) && !page_inplace(pfn))
+ 				n++;
+ 	}
+ 	return n;
+@@ -1546,10 +1765,15 @@
+ 	memory_bm_position_reset(orig_bm);
+ 	memory_bm_position_reset(copy_bm);
+ 	copy_pfn = memory_bm_next_pfn(copy_bm);
++	nr_inplace_image = 0;
+ 	for(;;) {
+ 		pfn = memory_bm_next_pfn(orig_bm);
+ 		if (unlikely(pfn == BM_END_OF_MAP))
+ 			break;
++		if (page_inplace(pfn)) {
++			nr_inplace_image++;
++			continue;
++		}
+ 		if (copy_data_page(copy_pfn, pfn)) {
+ 			memory_bm_set_bit(zero_bm, pfn);
+ 			/* Use this copy_pfn for a page that is not full of zeros */
+@@ -1558,7 +1782,7 @@
+ 		copied_pages++;
+ 		copy_pfn = memory_bm_next_pfn(copy_bm);
+ 	}
+-	return copied_pages;
++	return copied_pages + nr_inplace_image;
+ }
+ 
+ /* Total number of image pages */
+@@ -1633,6 +1857,7 @@
+ 	}
+ 
+ out:
++	hibernate_release_inplace();
+ 	nr_copy_pages = 0;
+ 	nr_meta_pages = 0;
+ 	nr_zero_pages = 0;
+@@ -1836,11 +2061,15 @@
+ 	struct zone *zone;
+ 	unsigned long saveable, size, max_size, count, highmem, pages = 0;
+ 	unsigned long alloc, save_highmem, pages_highmem, avail_normal;
++	unsigned int noio = 0;
++	bool inplace = inplace_map;
+ 	ktime_t start, stop;
+ 	int error;
+ 
+ 	pr_info("Preallocating image memory\n");
+ 	start = ktime_get();
++	if (inplace)
++		noio = memalloc_noio_save();
+ 
+ 	error = memory_bm_create(&orig_bm, GFP_IMAGE, PG_ANY);
+ 	if (error) {
+@@ -1905,6 +2134,16 @@
+ 		goto out;
+ 	}
+ 
++	/*
++	 * Shrinking would write the in-place pages to swap without freeing
++	 * them, and the caller may already have suspended the swap device.
++	 */
++	if (inplace) {
++		pr_err("Image does not fit in free memory: %lu pages to copy, at most %lu\n",
++		       saveable, size);
++		goto err_out;
++	}
++
+ 	/* Estimate the minimum size of the image. */
+ 	pages = minimum_image_size(saveable);
+ 	/*
+@@ -1980,6 +2219,8 @@
+ 	pages -= free_unnecessary_pages();
+ 
+  out:
++	if (inplace)
++		memalloc_noio_restore(noio);
+ 	stop = ktime_get();
+ 	pr_info("Allocated %lu pages for snapshot\n", pages);
+ 	swsusp_show_speed(start, stop, pages, "Allocated");
+@@ -1987,6 +2228,8 @@
+ 	return 0;
+ 
+  err_out:
++	if (inplace)
++		memalloc_noio_restore(noio);
+ 	swsusp_free();
+ 	return -ENOMEM;
+ }
+@@ -2149,12 +2392,13 @@
+ 	 * but we should not touch disk. This specially means we must _not_
+ 	 * touch swap space! Except we must write out our image of course.
+ 	 */
+-	nr_pages += nr_highmem;
++	nr_pages += nr_highmem + nr_inplace_image;
+ 	/* We don't actually copy the zero pages */
+ 	nr_zero_pages = nr_pages - nr_copy_pages;
+ 	nr_meta_pages = DIV_ROUND_UP(nr_pages * sizeof(long), PAGE_SIZE);
+ 
+-	pr_info("Image created (%d pages copied, %d zero pages)\n", nr_copy_pages, nr_zero_pages);
++	pr_info("Image created (%lu pages copied, %lu in place, %d zero pages)\n",
++		nr_copy_pages - nr_inplace_image, nr_inplace_image, nr_zero_pages);
+ 
+ 	return 0;
+ }
+@@ -2245,8 +2489,10 @@
+  */
+ int snapshot_read_next(struct snapshot_handle *handle)
+ {
+-	if (handle->cur > nr_meta_pages + nr_copy_pages)
+-		return 0;
++	if (handle->cur > nr_meta_pages + nr_copy_pages) {
++		smp_rmb();
++		return inplace_map && READ_ONCE(hibernate_inplace_torn) ? -EIO : 0;
++	}
+ 
+ 	if (!buffer) {
+ 		/* This makes the buffer be freed by swsusp_free() */
+@@ -2269,7 +2515,23 @@
+ 	} else {
+ 		struct page *page;
+ 
+-		page = pfn_to_page(memory_bm_next_pfn(&copy_bm));
++		if (inplace_map) {
++			unsigned long pfn;
++
++			if (handle->cur == nr_meta_pages + 1)
++				memory_bm_position_reset(&orig_bm);
++			do
++				pfn = memory_bm_next_pfn(&orig_bm);
++			while (pfn != BM_END_OF_MAP && memory_bm_test_bit(&zero_bm, pfn));
++			if (pfn == BM_END_OF_MAP)
++				return -ENODATA;
++			smp_rmb();
++			if (READ_ONCE(hibernate_inplace_torn))
++				return -EIO;
++			page = pfn_to_page(page_inplace(pfn) ? pfn : memory_bm_next_pfn(&copy_bm));
++		} else {
++			page = pfn_to_page(memory_bm_next_pfn(&copy_bm));
++		}
+ 		if (PageHighMem(page)) {
+ 			/*
+ 			 * Highmem pages are copied to the buffer,
+--- a/kernel/power/user.c
++++ b/kernel/power/user.c
+@@ -299,6 +299,7 @@
+ 	case SNAPSHOT_UNFREEZE:
+ 		if (!data->frozen || data->ready)
+ 			break;
++		hibernate_release_inplace();
+ 		pm_restore_gfp_mask();
+ 		free_basic_memory_bitmaps();
+ 		data->free_bitmaps = false;
+@@ -306,6 +307,22 @@
+ 		data->frozen = false;
+ 		break;
+ 
++	case SNAPSHOT_INPLACE:
++		if (data->mode != O_RDONLY || !data->frozen || data->ready) {
++			error = -EPERM;
++			break;
++		}
++		size = hibernate_mark_inplace();
++		if (size < 0) {
++			error = size;
++			break;
++		}
++		size <<= PAGE_SHIFT;
++		error = put_user(size, (loff_t __user *)arg);
++		if (error)
++			hibernate_release_inplace();
++		break;
++
+ 	case SNAPSHOT_CREATE_IMAGE:
+ 		if (data->mode != O_RDONLY || !data->frozen  || data->ready) {
+ 			error = -EPERM;
+@@ -436,6 +453,7 @@
+ 	case SNAPSHOT_GET_IMAGE_SIZE:
+ 	case SNAPSHOT_AVAIL_SWAP_SIZE:
+ 	case SNAPSHOT_ALLOC_SWAP_PAGE:
++	case SNAPSHOT_INPLACE:
+ 	case SNAPSHOT_CREATE_IMAGE:
+ 	case SNAPSHOT_SET_SWAP_AREA:
+ 		return snapshot_ioctl(file, cmd,
