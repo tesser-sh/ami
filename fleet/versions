@@ -1,8 +1,12 @@
 # Everything the images fetch from outside Ubuntu's archive, pinned by sha256,
-# and the one Ubuntu source the kernel is built from: noble's linux-aws at
-# ubuntu_kernel, its .dsc pinned by sha256 (the .dsc pins the rest).
+# and the two sources built here: noble's linux-aws at ubuntu_kernel, its .dsc
+# pinned by sha256 (the .dsc pins the rest), and Firecracker at the firecracker
+# tag and commit, which firecracker/build.sh builds into the release at
+# firecracker_url.
 firecracker=v1.17.0
-firecracker_sha256=06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
+firecracker_commit=95f868c8e345b1cc8faccd1a3c910b4989dc3f58
+firecracker_url=https://github.com/tesser-sh/ami/releases/download/firecracker-896a705811251d64/firecracker-v1.17.0-x86_64.tgz
+firecracker_sha256=1b8a6f84a0be4c01dbab4d2bdb8175eeb14afb73fc7718fe2462f50707f992bd
 ubuntu_kernel=6.8.0-1069.74
 ubuntu_kernel_dsc_sha256=7b2f8e2d6bfc4a203cce4b30c9cde0f34acd98cb672e2cd22787febb9c2c47f2
 noble=20261017
