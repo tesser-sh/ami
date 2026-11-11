@@ -1,16 +1,19 @@
 {
   "hostAmis": {
-    "us-east-1": "ami-04c93dc10c02435f9",
-    "us-west-2": "ami-0fda320525f886747"
+    "us-east-1": "ami-03be06e7858a8c9c8",
+    "us-west-2": "ami-0c966906f687b5548"
   },
   "image": {
-    "id": "build-42901007547",
-    "root": "d05a4c909becea2896cf3d208ba00618eb7e702b6564d8d0364b3f3dcc9b54a0",
+    "id": "build-42953028234",
+    "root": "d2b145c94cf63f9b688e57dfba48727da3e11f1c375483e4b2be7cdac5251d15",
     "kernel": "8b028619996ab63b46625fd3b8b9963f8ab75f1a75201d4b9b3ee387482be406",
     "dmInit": true
   },
   "imagesBuckets": {
     "us-west-2": "tesser-fleet-images-prod-131798513069-us-west-2",
     "us-east-1": "tesser-fleet-images-prod-131798513069-us-east-1"
+  },
+  "boxRoots": {
+    "tesser-box-20261111033457-68da2ad": "0d9cbe3a0ebe89be4ba5ba7652b899a27f549912e9958ee080b333c20878de14"
   }
 }
