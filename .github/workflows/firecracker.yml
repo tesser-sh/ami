@@ -1,0 +1,97 @@
+name: firecracker
+
+# Firecracker, jailer and snapshot-editor for fleet hosts, built by
+# firecracker/build.sh once per input hash and kept as the firecracker-<hash>
+# release, whose tarball fleet/versions pins by URL and sha256. A pull request
+# that changes the inputs builds and publishes that release, then fails until
+# fleet/versions pins it; a later run of the same inputs builds nothing.
+on:
+  pull_request:
+    paths:
+      - firecracker/**
+      - fleet/versions
+      - fleet/install-firecracker.sh
+      - .github/workflows/firecracker.yml
+  push:
+    branches: [main]
+    paths:
+      - firecracker/**
+      - fleet/versions
+      - fleet/install-firecracker.sh
+      - .github/workflows/firecracker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: firecracker
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - id: key
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          key=$({ grep -E '^firecracker(_commit)?=' fleet/versions; git ls-files -s firecracker; } | sha256sum | cut -c1-16)
+          url=https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/firecracker-$key
+          status=$(curl -sS --retry 3 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" "$url")
+          case $status in
+            200) echo "firecracker-$key: reusing it"; echo "hit=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "firecracker-$key: no release, building" ;;
+            *) echo "firecracker-$key: GitHub answered $status" >&2; exit 1 ;;
+          esac
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - if: steps.key.outputs.hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.key.outputs.key }}
+          TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source fleet/versions
+          start=$(date +%s)
+          bash firecracker/build.sh "$PWD/out"
+          echo "firecracker build: $(( $(date +%s) - start )) s on $(nproc) vCPUs"
+          patches=$(git ls-files 'firecracker/patches/*.patch' | sed 's,^,- ,')
+          gh release create "firecracker-$KEY" --target "$TARGET" --prerelease --latest=false --title "firecracker $KEY" \
+            --notes "Firecracker $firecracker ($firecracker_commit) built by firecracker/build.sh at $TARGET. Patches: ${patches:-none}" \
+            "out/firecracker-$firecracker-x86_64.tgz"
+
+      - name: fleet/versions pins the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          source fleet/versions
+          tgz=firecracker-$firecracker-x86_64.tgz
+          gh release download "firecracker-$KEY" -R "$GITHUB_REPOSITORY" -p "$tgz" -D "$RUNNER_TEMP"
+          url=https://github.com/$GITHUB_REPOSITORY/releases/download/firecracker-$KEY/$tgz
+          sha=$(sha256sum "$RUNNER_TEMP/$tgz" | cut -d' ' -f1)
+          if [[ $firecracker_url != "$url" || $firecracker_sha256 != "$sha" ]]; then
+            printf '::error::fleet/versions does not pin firecracker-%s; set:\nfirecracker_url=%s\nfirecracker_sha256=%s\n' "$KEY" "$url" "$sha"
+            exit 1
+          fi
+
+      # The snapshot format is the one every hibernated box was saved in: a
+      # build that moves it strands them all.
+      - name: Smoke
+        run: |
+          set -euo pipefail
+          source fleet/versions
+          bin=$RUNNER_TEMP/bin
+          bash fleet/install-firecracker.sh "$bin"
+          first() { local out; out=$("$bin/$1" "$2"); out=${out%%$'\n'*}; echo "$1 $2: $out"; [[ $out == "$3" ]]; }
+          first firecracker --version "Firecracker $firecracker"
+          first firecracker --snapshot-version v12.0.0
+          first jailer --version "Jailer $firecracker"
+          first snapshot-editor --version "snapshot-editor $firecracker"
