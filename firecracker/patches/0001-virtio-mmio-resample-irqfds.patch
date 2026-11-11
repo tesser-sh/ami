@@ -1,0 +1,177 @@
+From 08b329dc7382f044acec9f0793681e1524fc12cc Mon Sep 17 00:00:00 2001
+From: Rohan Godha <git@rohangodha.com>
+Date: Tue, 10 Nov 2026 21:40:14 -0500
+Subject: [PATCH] virtio-mmio: resample irqfds so level-triggered pins don't
+ drop interrupts
+
+A guest that booted elsewhere can have its IO-APIC program a virtio-mmio
+device's pin level-triggered (EC2's MADT overrides ISA IRQs 5, 9, 10, 11 to
+level). Firecracker raised those interrupts as edge pulses through irqfd: a
+pulse that arrives while the pin's remote IRR is still set is dropped, so the
+driver waits forever on a completion it was never told about.
+
+Register MMIO irqfds with KVM_IRQFD_FLAG_RESAMPLE: KVM keeps the line asserted
+until the guest's EOI, then signals the resamplefd, and the device raises it
+again while interrupt_status is non-zero. Edge-programmed pins keep working:
+KVM routes their EOI through the same ack notifier.
+---
+ src/vmm/src/device_manager/mmio.rs           | 13 +++--
+ src/vmm/src/devices/virtio/transport/mmio.rs | 52 ++++++++++++++++++++
+ src/vmm/src/vstate/vm.rs                     | 22 ++++++++-
+ 3 files changed, 83 insertions(+), 4 deletions(-)
+
+diff --git a/src/vmm/src/device_manager/mmio.rs b/src/vmm/src/device_manager/mmio.rs
+index 689a446..8617d41 100644
+--- a/src/vmm/src/device_manager/mmio.rs
++++ b/src/vmm/src/device_manager/mmio.rs
+@@ -25,7 +25,7 @@ use crate::arch::{RTC_MEM_START, SERIAL_MEM_START};
+ use crate::devices::legacy::{RTCDevice, SerialDevice};
+ use crate::devices::pseudo::BootTimer;
+ use crate::devices::virtio::device::{VirtioDevice, VirtioDeviceId, VirtioDeviceType};
+-use crate::devices::virtio::transport::mmio::{IrqTrigger, MmioTransport};
++use crate::devices::virtio::transport::mmio::{IrqResampler, IrqTrigger, MmioTransport};
+ #[cfg(target_arch = "x86_64")]
+ use crate::logger::debug;
+ use crate::vstate::bus::{Bus, BusError};
+@@ -209,8 +209,15 @@ impl MMIOVirtioDevices {
+                     .register_ioevent(queue_evt, &io_addr, u32::try_from(i).unwrap())
+                     .map_err(MmioError::RegisterIoEvent)?;
+             }
+-            vm.register_irq(&mmio_device.interrupt.irq_evt, gsi)
+-                .map_err(MmioError::RegisterIrqFd)?;
++            vm.register_irq_with_resample(
++                &mmio_device.interrupt.irq_evt,
++                &mmio_device.interrupt.resample_evt,
++                gsi,
++            )
++            .map_err(MmioError::RegisterIrqFd)?;
++            event_manager.add_subscriber(Arc::new(Mutex::new(IrqResampler(
++                mmio_device.interrupt.clone(),
++            ))));
+         }
+ 
+         vm.common.mmio_bus.insert(
+diff --git a/src/vmm/src/devices/virtio/transport/mmio.rs b/src/vmm/src/devices/virtio/transport/mmio.rs
+index f82e125..182a4d1 100644
+--- a/src/vmm/src/devices/virtio/transport/mmio.rs
++++ b/src/vmm/src/devices/virtio/transport/mmio.rs
+@@ -382,6 +382,7 @@ impl From<VirtioInterruptType> for IrqType {
+ pub struct IrqTrigger {
+     pub(crate) irq_status: Arc<AtomicU32>,
+     pub(crate) irq_evt: EventFd,
++    pub(crate) resample_evt: EventFd,
+ }
+ 
+ impl Default for IrqTrigger {
+@@ -442,12 +443,44 @@ impl VirtioInterrupt for IrqTrigger {
+     }
+ }
+ 
++/// Event loop subscriber that re-raises an MMIO device's interrupt on KVM resample.
++#[derive(Debug)]
++pub struct IrqResampler(pub Arc<IrqTrigger>);
++
++impl event_manager::MutEventSubscriber for IrqResampler {
++    fn process(&mut self, _: event_manager::Events, _: &mut event_manager::EventOps) {
++        self.0.resample();
++    }
++
++    fn init(&mut self, ops: &mut event_manager::EventOps) {
++        if let Err(err) = ops.add(event_manager::Events::new(
++            &self.0.resample_evt,
++            vmm_sys_util::epoll::EventSet::IN,
++        )) {
++            error!("Failed to register irq resample event: {}", err);
++        }
++    }
++}
++
+ impl IrqTrigger {
+     pub fn new() -> Self {
+         Self {
+             irq_status: Arc::new(AtomicU32::new(0)),
+             irq_evt: EventFd::new(libc::EFD_NONBLOCK)
+                 .expect("Could not create EventFd for IrqTrigger"),
++            resample_evt: EventFd::new(libc::EFD_NONBLOCK)
++                .expect("Could not create resample EventFd for IrqTrigger"),
++        }
++    }
++
++    /// Called when KVM resamples the line (the guest EOI'd it): raise it again while the
++    /// device still has an interrupt the guest hasn't acknowledged.
++    pub fn resample(&self) {
++        let _ = self.resample_evt.read();
++        if self.irq_status.load(Ordering::SeqCst) != 0 {
++            if let Err(err) = self.irq_evt.write(1) {
++                error!("Failed to re-send irq to the guest: {:?}", err);
++            }
+         }
+     }
+ 
+@@ -1288,4 +1321,23 @@ pub(crate) mod tests {
+             .trigger(VirtioInterruptType::Queue(0))
+             .unwrap_err();
+     }
++    #[test]
++    fn test_irq_resample_reraises_only_while_pending() {
++        let irq = IrqTrigger::new();
++        irq.trigger_irq(IrqType::Vring).unwrap();
++        assert_eq!(irq.irq_evt.read().unwrap(), 1);
++
++        // The guest EOIs while the interrupt is still unacknowledged: raise it again.
++        irq.resample_evt.write(1).unwrap();
++        irq.resample();
++        assert_eq!(irq.irq_evt.read().unwrap(), 1);
++
++        // Acknowledged before the EOI: nothing to raise.
++        irq.irq_status.fetch_and(!VIRTIO_MMIO_INT_VRING, Ordering::SeqCst);
++        irq.resample_evt.write(1).unwrap();
++        irq.resample();
++        assert!(irq.irq_evt.read().is_err());
++        assert!(irq.resample_evt.read().is_err());
++    }
++
+ }
+diff --git a/src/vmm/src/vstate/vm.rs b/src/vmm/src/vstate/vm.rs
+index dfedd64..d0d8fe3 100644
+--- a/src/vmm/src/vstate/vm.rs
++++ b/src/vmm/src/vstate/vm.rs
+@@ -666,6 +666,27 @@ impl KvmVm {
+     /// Register a device IRQ
+     pub fn register_irq(&self, fd: &EventFd, gsi: u32) -> Result<(), errno::Error> {
+         self.common.fd.register_irqfd(fd, gsi)?;
++        self.route_irq(gsi);
++        Ok(())
++    }
++
++    /// Register a device IRQ in resample mode: KVM keeps the line asserted until the guest's EOI,
++    /// then signals `resample`, so a level-triggered pin never drops an interrupt raised while the
++    /// previous one was still being serviced.
++    pub fn register_irq_with_resample(
++        &self,
++        fd: &EventFd,
++        resample: &EventFd,
++        gsi: u32,
++    ) -> Result<(), errno::Error> {
++        self.common
++            .fd
++            .register_irqfd_with_resample(fd, resample, gsi)?;
++        self.route_irq(gsi);
++        Ok(())
++    }
++
++    fn route_irq(&self, gsi: u32) {
+ 
+         let mut entry = kvm_irq_routing_entry {
+             gsi,
+@@ -693,7 +714,6 @@ impl KvmVm {
+                     masked: false,
+                 },
+             );
+-        Ok(())
+     }
+ 
+     /// Register an MSI device interrupt
+-- 
+2.50.1
+
